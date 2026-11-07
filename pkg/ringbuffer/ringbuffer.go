@@ -9,20 +9,26 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-var ErrInvalidBuffer = errors.New("invalid ring buffer")
+var (
+	ErrInvalidBuffer = errors.New("invalid ring buffer")
+	ErrChunkTooLarge = errors.New("chunk is too large")
+)
 
 type (
 	RingBuffer struct {
-		chunkSize   uint64
-		bufLen      uint64
-		head        uint64
-		tail        uint64
-		bufBuckets  [][]byte
-		onceClose   sync.Once
-		mu          sync.Mutex
-		drainDone   chan struct{}
-		draining    bool
-		shouldDrain bool
+		chunkSize         uint64
+		bufLen            uint64
+		head              uint64
+		tail              uint64
+		bufBuckets        [][]byte
+		onceClose         sync.Once
+		onceDrained       sync.Once
+		mu                sync.Mutex
+		drainDone         chan struct{}
+		draining          bool
+		closed            bool
+		shouldDrain       bool
+		shouldBlockOnFull bool
 	}
 	
 	Option func(rb *RingBuffer)
@@ -46,6 +52,12 @@ func WithDrainingOnClose(shouldDrain bool) Option {
 	}
 }
 
+func WithBlockingOnFull(shouldBlockOnFull bool) Option {
+	return func(rb *RingBuffer) {
+		rb.shouldBlockOnFull = shouldBlockOnFull
+	}
+}
+
 func New(opts ...Option) (*RingBuffer, error) {
 	var rb RingBuffer
 	for _, opt := range opts {
@@ -65,50 +77,55 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if rb.draining && rb.shouldDrain {
-		return 0, io.ErrClosedPipe
-	}
-	if !rb.shouldDrain {
-		return 0, io.ErrClosedPipe
+	if uint64(len(p)) > rb.chunkSize {
+		return 0, ErrChunkTooLarge
 	}
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
+	if rb.draining && rb.shouldDrain {
+		return 0, io.ErrClosedPipe
+	}
+	if rb.closed {
+		return 0, io.ErrClosedPipe
+	}
 	if rb.head == rb.bufLen {
 		rb.head = 0
 	}
 	if rb.bufBuckets[rb.head] == nil {
 		rb.bufBuckets[rb.head] = make([]byte, rb.chunkSize)
 	}
-	copy(rb.bufBuckets[rb.head], p)
+	n := copy(rb.bufBuckets[rb.head], p)
 	rb.head++
-	return 0, nil
+	return n, nil
 }
 
 func (rb *RingBuffer) Read(b []byte) (int, error) {
 	rb.mu.Lock()
-	defer rb.mu.Unlock()
 	if rb.shouldDrain {
 		drained := rb.draining && rb.tail == rb.head
 		if drained {
-			close(rb.drainDone)
+			rb.mu.Unlock()
+			rb.onceDrained.Do(func() { close(rb.drainDone) })
 			return 0, io.EOF
 		}
-	} else {
+	} else if rb.closed {
+		rb.mu.Unlock()
 		return 0, io.ErrClosedPipe
 	}
-	
 	if rb.tail == rb.bufLen {
 		rb.tail = 0
 	}
 	if rb.head == 0 {
+		rb.mu.Unlock()
 		return 0, io.EOF
 	}
-	copy(b, rb.bufBuckets[rb.tail])
+	n := copy(b, rb.bufBuckets[rb.tail])
 	rb.tail++
+	rb.mu.Unlock()
 	if rb.shouldDrain {
 		rb.drainDone <- struct{}{}
 	}
-	return 0, nil
+	return n, nil
 }
 
 func (rb *RingBuffer) Close() error {
@@ -117,6 +134,7 @@ func (rb *RingBuffer) Close() error {
 		rb.mu.Unlock()
 		return nil
 	}
+	rb.closed = true
 	rb.mu.Unlock()
 	if !rb.shouldDrain {
 		rb.mu.Lock()
