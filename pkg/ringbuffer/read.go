@@ -11,6 +11,8 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 	if err := rb.validateState(); err != nil {
 		return 0, err
 	}
+	rb.wgReaders.Add(1)
+	defer rb.wgReaders.Done()
 	switch {
 	case rb.isEmpty():
 		if !rb.ShouldReadWaitOnEmpty() {

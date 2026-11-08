@@ -3,6 +3,7 @@ package ringbuffer
 import (
 	"errors"
 	"sync"
+	"time"
 )
 
 var (
@@ -27,7 +28,9 @@ type (
 		size                  uint64
 		readPos               uint64
 		writePos              uint64
+		drainTimeout          time.Duration
 		state                 BufferState
+		wgReaders             sync.WaitGroup
 		muState               *sync.Mutex
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
@@ -67,9 +70,10 @@ func WithOverWrite(shouldOverWrite bool) Option {
 	}
 }
 
-func WithDrainOnClose(shouldDrainOnClose bool) Option {
+func WithDrainOnClose(shouldDrainOnClose bool, drainTimeout time.Duration) Option {
 	return func(rb *RingBuffer) {
 		rb.shouldDrainOnClose = shouldDrainOnClose
+		rb.drainTimeout = drainTimeout
 	}
 }
 
