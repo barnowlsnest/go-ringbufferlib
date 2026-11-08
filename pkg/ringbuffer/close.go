@@ -1,13 +1,13 @@
 package ringbuffer
 
 func (rb *RingBuffer) Close() error {
-	if rb.shouldDrainOnClose {
+	if rb.ShouldDrainOnClose() {
 		rb.muState.Lock()
-		rb.state = draining
+		rb.setDraining()
 		rb.muState.Unlock()
 	}
 	rb.muState.Lock()
-	rb.state = closed
+	rb.setClosed()
 	rb.muState.Unlock()
 	return nil
 }

@@ -28,8 +28,6 @@ type (
 		readPos               uint64
 		writePos              uint64
 		state                 BufferState
-		wgWriters             sync.WaitGroup
-		wgReaders             sync.WaitGroup
 		muState               *sync.Mutex
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond

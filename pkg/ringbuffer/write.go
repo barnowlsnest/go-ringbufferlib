@@ -22,11 +22,9 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 		if !rb.ShouldWriteWaitOnFull() {
 			return 0, ErrFull
 		}
-		rb.wgWriters.Add(1)
 		for !rb.shouldStopWaiting() {
 			rb.whenRead.Wait()
 		}
-		rb.wgWriters.Done()
 		if err := rb.validateState(); err != nil {
 			return 0, err
 		}
