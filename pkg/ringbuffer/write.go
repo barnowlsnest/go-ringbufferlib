@@ -1,9 +1,5 @@
 package ringbuffer
 
-import (
-	"errors"
-)
-
 func (rb *RingBuffer) Write(p []byte) (int, error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
@@ -39,29 +35,27 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 }
 
 func (rb *RingBuffer) write(p []byte) (int, error) {
-	if uint64(len(p)) > rb.size {
+	pLen := uint64(len(p))
+	if pLen == 0 {
+		return 0, nil
+	}
+	if pLen > rb.size {
 		return 0, ErrTooLargeForWrite
 	}
 	if len(p) == 0 {
 		return 0, nil
 	}
-	if avail, err := rb.availWrite(p); err != nil {
-		switch {
-		case errors.Is(err, ErrNotEnoughToWrite):
-			if !rb.ShouldOverWrite() {
-				// if explicitly set not to overwrite we write as much we can and drop the rest
-				// return number of written bytes and error
-				return copy(rb.buf[rb.writePos:], p[:avail]), ErrFull
-			}
-			return rb.overwrite(avail, p), nil
-		default:
-			return 0, err
-		}
+	free := rb.size - rb.bytesCount
+	if pLen <= free {
+		return rb.copyIn(p), nil
 	}
-	n := copy(rb.buf[rb.writePos:], p)
-	rb.writePos += uint64(n)
-	rb.bytesCount += uint64(n)
-	return n, nil
+	if rb.ShouldOverWrite() {
+		drop := pLen - free
+		rb.readPos = (rb.readPos + drop) & rb.mask
+		rb.bytesCount -= drop
+		return rb.copyIn(p), nil
+	}
+	return rb.copyIn(p[:free]), ErrFull
 }
 
 func (rb *RingBuffer) overwrite(avail uint64, p []byte) int {
@@ -72,18 +66,15 @@ func (rb *RingBuffer) overwrite(avail uint64, p []byte) int {
 	return n1 + n2
 }
 
-func (rb *RingBuffer) isWriteOnLastByte() bool {
-	return rb.writePos >= rb.size
+func (rb *RingBuffer) copyIn(p []byte) int {
+	n := copy(rb.buf[rb.writePos:], p)
+	copy(rb.buf, p[n:])
+	rb.writePos = (rb.writePos + uint64(len(p))) & rb.mask
+	rb.bytesCount += uint64(len(p))
+	rb.whenWrite.Broadcast()
+	return len(p)
 }
 
-func (rb *RingBuffer) availWrite(p []byte) (uint64, error) {
-	pLen := uint64(len(p))
-	if pLen > rb.size {
-		return 0, ErrNotEnoughToWrite
-	}
-	n := rb.size - rb.writePos
-	if n >= pLen {
-		return n, nil
-	}
-	return n, ErrNotEnoughToWrite
+func (rb *RingBuffer) isWriteOnLastByte() bool {
+	return rb.writePos >= rb.size
 }

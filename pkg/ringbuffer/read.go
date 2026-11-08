@@ -33,22 +33,18 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 }
 
 func (rb *RingBuffer) read(dest []byte) (int, error) {
-	var n int
-	switch {
-	case rb.writePos > rb.readPos: // write ahead, read behind
-		n = copy(dest, rb.buf[rb.readPos:rb.writePos])
-		rb.readPos += uint64(n)
-	case rb.writePos < rb.readPos: // read behind overwrite head
-		left, over := rb.size-rb.readPos, rb.writePos
-		n = copy(dest, rb.buf[rb.readPos:rb.size])
-		rb.readPos += uint64(n)
-		if uint64(len(dest)) > left {
-			n += copy(dest[left:], rb.buf[:over])
-			rb.readPos = uint64(n) - left
-		}
-	default: // read and write on the same pos
-		n = 0
+	return rb.copyFrom(dest), nil
+}
+
+func (rb *RingBuffer) copyFrom(dest []byte) int {
+	n := min(uint64(len(dest)), rb.bytesCount)
+	if n == 0 {
+		return 0
 	}
-	rb.bytesCount -= uint64(n)
-	return n, nil
+	c := copy(dest[:n], rb.buf[rb.readPos:])
+	copy(dest[c:n], rb.buf)
+	rb.readPos = (rb.readPos + n) & rb.mask
+	rb.bytesCount -= n
+	rb.whenRead.Broadcast()
+	return int(n)
 }

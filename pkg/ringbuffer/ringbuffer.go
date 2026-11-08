@@ -3,23 +3,26 @@ package ringbuffer
 import (
 	"errors"
 	"io"
+	"math/bits"
 	"sync"
 	"time"
 )
 
 var (
-	ErrNotEnoughToWrite = errors.New("write: not enough available bytes bytes")
 	ErrEmpty            = errors.New("empty: no new bytes to read")
 	ErrFull             = errors.New("full: no free bytes to write to")
 	ErrDraining         = errors.New("drain: decline write")
 	ErrTooLargeForWrite = errors.New("write: write larger than buffer capacity")
 )
 
+const defaultBufferSize = 32 * 1024
+
 type (
 	Option func(rb *RingBuffer)
 	
 	RingBuffer struct {
 		size                  uint64
+		mask                  uint64
 		readPos               uint64
 		writePos              uint64
 		bytesCount            uint64
@@ -41,9 +44,14 @@ type (
 )
 
 func New(size uint64, opts ...Option) *RingBuffer {
+	if size == 0 {
+		size = defaultBufferSize
+	}
 	var muState sync.Mutex
+	size = nextPow2(size)
 	rb := RingBuffer{
 		size:                  size,
+		mask:                  size - 1,
 		buf:                   make([]byte, size),
 		muState:               &muState,
 		whenRead:              sync.NewCond(&muState),
@@ -132,4 +140,11 @@ func (rb *RingBuffer) validateState() error {
 		return io.EOF
 	}
 	return nil
+}
+
+func nextPow2(n uint64) uint64 {
+	if n <= 1 {
+		return 1
+	}
+	return 1 << bits.Len64(n-1)
 }
