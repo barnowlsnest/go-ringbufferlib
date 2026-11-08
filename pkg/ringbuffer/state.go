@@ -31,7 +31,7 @@ func (rb *RingBuffer) setFull() {
 }
 
 func (rb *RingBuffer) isEmpty() bool {
-	return rb.state == draining
+	return rb.state == empty
 }
 
 func (rb *RingBuffer) setEmpty() {

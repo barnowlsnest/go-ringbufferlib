@@ -49,14 +49,14 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 }
 
 func (rb *RingBuffer) read(dest []byte) (int, error) {
-	avail, pos, err := rb.availRead(dest)
+	_, pos, err := rb.availRead(dest)
 	if err != nil {
 		return 0, err
 	}
 	var n int
 	switch pos {
 	case writeAhead:
-		n = copy(dest, rb.buf[rb.readPos:avail])
+		n = copy(dest, rb.buf[rb.readPos:rb.writePos])
 		rb.readPos += uint64(n)
 	case readBehindOverwrite:
 		left, over := rb.size-rb.readPos, rb.writePos
@@ -64,7 +64,7 @@ func (rb *RingBuffer) read(dest []byte) (int, error) {
 		rb.readPos += uint64(n)
 		if uint64(len(dest)) > left {
 			n += copy(dest[left:], rb.buf[:over])
-			rb.readPos = uint64(n)
+			rb.readPos = uint64(n) - left
 		}
 	case readAndWriteEqual:
 		n = 0
