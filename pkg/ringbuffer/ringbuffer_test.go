@@ -66,8 +66,8 @@ func (s *RingBufferSuite) TestSequential() {
 			name: "write then read",
 			size: 8,
 			steps: []step{
-				{op: opWrite, data: "abc", wantN: 3},
-				{op: opRead, readLen: 8, want: "abc"},
+				{op: opWrite, data: "msg", wantN: 3},
+				{op: opRead, readLen: 8, want: "msg"},
 				{op: opRead, readLen: 1, wantErr: ringbuffer.ErrEmpty},
 			},
 		},
@@ -90,18 +90,18 @@ func (s *RingBufferSuite) TestSequential() {
 			name: "destination larger than capacity",
 			size: 4,
 			steps: []step{
-				{op: opWrite, data: "ab", wantN: 2},
-				{op: opRead, readLen: 512, want: "ab"},
+				{op: opWrite, data: "ok", wantN: 2},
+				{op: opRead, readLen: 512, want: "ok"},
 			},
 		},
 		{
 			name: "partial reads keep order",
 			size: 8,
 			steps: []step{
-				{op: opWrite, data: "abcdef", wantN: 6},
-				{op: opRead, readLen: 2, want: "ab"},
-				{op: opRead, readLen: 2, want: "cd"},
-				{op: opRead, readLen: 8, want: "ef"},
+				{op: opWrite, data: "p1p2p3", wantN: 6},
+				{op: opRead, readLen: 2, want: "p1"},
+				{op: opRead, readLen: 2, want: "p2"},
+				{op: opRead, readLen: 8, want: "p3"},
 			},
 		},
 		{
@@ -109,10 +109,10 @@ func (s *RingBufferSuite) TestSequential() {
 			size: 4,
 			opts: []ringbuffer.Option{ringbuffer.WithOverWrite(false)},
 			steps: []step{
-				{op: opWrite, data: "abc", wantN: 3},
-				{op: opRead, readLen: 2, want: "ab"},
-				{op: opWrite, data: "def", wantN: 3},
-				{op: opRead, readLen: 4, want: "cdef"},
+				{op: opWrite, data: "old", wantN: 3},
+				{op: opRead, readLen: 2, want: "ol"},
+				{op: opWrite, data: "new", wantN: 3},
+				{op: opRead, readLen: 4, want: "dnew"},
 			},
 		},
 		{
@@ -120,46 +120,46 @@ func (s *RingBufferSuite) TestSequential() {
 			size: 4,
 			opts: []ringbuffer.Option{ringbuffer.WithOverWrite(false)},
 			steps: []step{
-				{op: opWrite, data: "abcd", wantN: 4},
-				{op: opRead, readLen: 4, want: "abcd"},
-				{op: opWrite, data: "efgh", wantN: 4},
-				{op: opRead, readLen: 4, want: "efgh"},
+				{op: opWrite, data: "full", wantN: 4},
+				{op: opRead, readLen: 4, want: "full"},
+				{op: opWrite, data: "next", wantN: 4},
+				{op: opRead, readLen: 4, want: "next"},
 			},
 		},
 		{
 			name: "overwrite drops oldest",
 			size: 4,
 			steps: []step{
-				{op: opWrite, data: "abcd", wantN: 4},
-				{op: opWrite, data: "ef", wantN: 2},
-				{op: opRead, readLen: 4, want: "cdef"},
+				{op: opWrite, data: "--ke", wantN: 4},
+				{op: opWrite, data: "ep", wantN: 2},
+				{op: opRead, readLen: 4, want: "keep"},
 			},
 		},
 		{
 			name: "overwrite when exactly full",
 			size: 4,
 			steps: []step{
-				{op: opWrite, data: "abcd", wantN: 4},
-				{op: opWrite, data: "e", wantN: 1},
-				{op: opRead, readLen: 4, want: "bcde"},
+				{op: opWrite, data: "-kee", wantN: 4},
+				{op: opWrite, data: "p", wantN: 1},
+				{op: opRead, readLen: 4, want: "keep"},
 			},
 		},
 		{
 			name: "overwrite across wrap",
 			size: 4,
 			steps: []step{
-				{op: opWrite, data: "abc", wantN: 3},
-				{op: opRead, readLen: 2, want: "ab"},
-				{op: opWrite, data: "def", wantN: 3},
-				{op: opWrite, data: "gh", wantN: 2},
-				{op: opRead, readLen: 4, want: "efgh"},
+				{op: opWrite, data: "---", wantN: 3},
+				{op: opRead, readLen: 2, want: "--"},
+				{op: opWrite, data: "-ke", wantN: 3},
+				{op: opWrite, data: "ep", wantN: 2},
+				{op: opRead, readLen: 4, want: "keep"},
 			},
 		},
 		{
 			name: "oversize write rejected in overwrite mode",
 			size: 4,
 			steps: []step{
-				{op: opWrite, data: "abcdefgh", wantN: 0, wantErr: ringbuffer.ErrTooLargeForWrite},
+				{op: opWrite, data: "too-long", wantN: 0, wantErr: ringbuffer.ErrTooLargeForWrite},
 				{op: opRead, readLen: 1, wantErr: ringbuffer.ErrEmpty},
 			},
 		},
@@ -167,26 +167,26 @@ func (s *RingBufferSuite) TestSequential() {
 			name: "size rounds up to power of two",
 			size: 6,
 			steps: []step{
-				{op: opWrite, data: "12345678", wantN: 8},
-				{op: opRead, readLen: 8, want: "12345678"},
+				{op: opWrite, data: "rounded8", wantN: 8},
+				{op: opRead, readLen: 8, want: "rounded8"},
 			},
 		},
 		{
 			name: "size zero uses default",
 			size: 0,
 			steps: []step{
-				{op: opWrite, data: "a", wantN: 1},
-				{op: opRead, readLen: 1, want: "a"},
+				{op: opWrite, data: "d", wantN: 1},
+				{op: opRead, readLen: 1, want: "d"},
 			},
 		},
 		{
 			name: "closed buffer returns rest then EOF",
 			size: 8,
 			steps: []step{
-				{op: opWrite, data: "abc", wantN: 3},
+				{op: opWrite, data: "rest", wantN: 4},
 				{op: opClose},
-				{op: opRead, readLen: 2, want: "ab"},
-				{op: opRead, readLen: 2, want: "c"},
+				{op: opRead, readLen: 2, want: "re"},
+				{op: opRead, readLen: 4, want: "st"},
 				{op: opRead, readLen: 2, wantErr: io.EOF},
 				{op: opClose},
 			},
@@ -225,7 +225,7 @@ func (s *RingBufferSuite) TestBlocking() {
 			name:    "read waits for write",
 			opts:    []ringbuffer.Option{ringbuffer.WithReadWaitOnEmpty(true)},
 			blocked: step{op: opRead, readLen: 4},
-			release: step{op: opWrite, data: "hi"},
+			release: step{op: opWrite, data: "go"},
 			wantN:   2,
 		},
 		{
@@ -239,16 +239,16 @@ func (s *RingBufferSuite) TestBlocking() {
 		{
 			name:    "write waits for room",
 			opts:    []ringbuffer.Option{ringbuffer.WithOverWrite(false)},
-			prefill: "abcd",
-			blocked: step{op: opWrite, data: "ef"},
-			release: step{op: opRead, readLen: 2},
-			wantN:   2,
+			prefill: "full",
+			blocked: step{op: opWrite, data: "more"},
+			release: step{op: opRead, readLen: 4},
+			wantN:   4,
 		},
 		{
 			name:    "write released by close",
 			opts:    []ringbuffer.Option{ringbuffer.WithOverWrite(false)},
-			prefill: "abcd",
-			blocked: step{op: opWrite, data: "ef"},
+			prefill: "full",
+			blocked: step{op: opWrite, data: "more"},
 			release: step{op: opClose},
 			wantN:   0,
 			wantErr: io.EOF,
@@ -259,8 +259,8 @@ func (s *RingBufferSuite) TestBlocking() {
 				ringbuffer.WithOverWrite(false),
 				ringbuffer.WithDrainOnClose(true, time.Second),
 			},
-			prefill: "abcd",
-			blocked: step{op: opWrite, data: "ef"},
+			prefill: "full",
+			blocked: step{op: opWrite, data: "more"},
 			release: step{op: opClose},
 			wantN:   0,
 			wantErr: ringbuffer.ErrDraining,
@@ -320,14 +320,14 @@ func (s *RingBufferSuite) TestDrainOnClose() {
 			name:        "gives up after timeout",
 			readDuring:  false,
 			wantElapsed: timeout,
-			wantLeft:    "abc",
+			wantLeft:    "left",
 		},
 	}
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
 			synctest.Test(s.T(), func(t *testing.T) {
 				rb := ringbuffer.New(8, ringbuffer.WithDrainOnClose(true, timeout))
-				_, err := rb.Write([]byte("abc"))
+				_, err := rb.Write([]byte("left"))
 				require.NoError(t, err)
 
 				start := time.Now()
@@ -338,14 +338,14 @@ func (s *RingBufferSuite) TestDrainOnClose() {
 				}()
 				synctest.Wait()
 
-				_, err = rb.Write([]byte("x"))
+				_, err = rb.Write([]byte("late"))
 				require.ErrorIs(t, err, ringbuffer.ErrDraining, "writes rejected while draining")
 
 				if tt.readDuring {
 					buf := make([]byte, 8)
 					n, err := rb.Read(buf)
 					require.NoError(t, err, "reads allowed while draining")
-					require.Equal(t, "abc", string(buf[:n]))
+					require.Equal(t, "left", string(buf[:n]))
 				}
 				<-closed
 				require.Equal(t, tt.wantElapsed, time.Since(start))
@@ -360,7 +360,7 @@ func (s *RingBufferSuite) TestDrainOnClose() {
 }
 
 func (s *RingBufferSuite) TestIOReaderContract() {
-	content := []byte("hello, ring buffer")
+	content := []byte("io.Reader contract")
 	rb := ringbuffer.New(64)
 	_, err := rb.Write(content)
 	s.Require().NoError(err)
@@ -451,7 +451,7 @@ func FuzzOverwriteModel(f *testing.F) {
 		{
 			name:         "writes and reads that wrap and overwrite",
 			capacityLog2: 2,
-			payload:      []byte("abcdefghijklmnop"),
+			payload:      []byte("wrap-and-overwrite"),
 			ops: []byte{
 				fuzzWrite | 3,
 				fuzzRead | 2,
@@ -465,7 +465,7 @@ func FuzzOverwriteModel(f *testing.F) {
 		{
 			name:         "one-byte capacity",
 			capacityLog2: 0,
-			payload:      []byte("xyz"),
+			payload:      []byte("one-byte-cap"),
 			ops: []byte{
 				fuzzWrite | 1,
 				fuzzWrite | 1,
@@ -477,7 +477,7 @@ func FuzzOverwriteModel(f *testing.F) {
 		{
 			name:         "oversize writes rejected",
 			capacityLog2: 6,
-			payload:      bytes.Repeat([]byte("0123456789"), 20),
+			payload:      bytes.Repeat([]byte("oversize-"), 20),
 			ops: []byte{
 				fuzzWrite | 100,
 				fuzzRead | 16,
