@@ -7,16 +7,15 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	if rb.ShouldOverWrite() {
-		return rb.write(p) // drops oldest, never blocks
+		return rb.write(p)
 	}
-	// no overwrite: block until all of p is written
 	var total int
 	for len(p) > 0 {
 		for rb.isFull() && !rb.draining {
 			rb.whenRead.Wait() // copyFrom broadcasts after each read
 		}
 		if err := rb.validateState(); err != nil {
-			return total, err // report what was actually written
+			return total, err
 		}
 		free := rb.size - rb.bytesCount
 		n := rb.copyIn(p[:min(uint64(len(p)), free)])
@@ -26,7 +25,6 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 	return total, nil
 }
 
-// write is the overwrite-mode path: it drops the oldest bytes to make room.
 func (rb *RingBuffer) write(p []byte) (int, error) {
 	pLen := uint64(len(p))
 	if pLen == 0 {

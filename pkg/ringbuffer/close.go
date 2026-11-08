@@ -4,12 +4,11 @@ import (
 	"time"
 )
 
-// Close is idempotent. With drain-on-close it rejects new writes, lets
-// readers consume what is left (up to drainTimeout), then closes and wakes
-// every blocked reader and writer.
+// Close is idempotent. With drain-on-close it waits up to drainTimeout for
+// readers to empty the buffer.
 func (rb *RingBuffer) Close() error {
 	rb.muState.Lock()
-	if rb.validateState() != nil { // already draining or closed
+	if rb.validateState() != nil {
 		rb.muState.Unlock()
 		return nil
 	}

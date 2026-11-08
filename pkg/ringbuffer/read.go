@@ -2,8 +2,8 @@ package ringbuffer
 
 import "io"
 
-// Read is allowed while draining; it returns io.EOF only once the buffer
-// is closed and every remaining byte has been read.
+// Read keeps working while draining and after Close until the buffer is empty,
+// then returns io.EOF.
 func (rb *RingBuffer) Read(dest []byte) (int, error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
