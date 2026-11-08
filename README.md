@@ -1,1 +1,175 @@
 # go-ringbufferlib
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/barnowlsnest/go-ringbufferlib/pkg/ringbuffer.svg)](https://pkg.go.dev/github.com/barnowlsnest/go-ringbufferlib/pkg/ringbuffer)
+[![build](https://github.com/barnowlsnest/go-ringbufferlib/actions/workflows/build.yml/badge.svg)](https://github.com/barnowlsnest/go-ringbufferlib/actions/workflows/build.yml)
+[![lint](https://github.com/barnowlsnest/go-ringbufferlib/actions/workflows/lint.yml/badge.svg)](https://github.com/barnowlsnest/go-ringbufferlib/actions/workflows/lint.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and implements `io.Reader`, `io.Writer` and `io.Closer`, so it works with `io.Copy` and anything else that streams bytes.
+
+- **Two write modes:** keep only the newest bytes (overwrite), or block until readers make room (backpressure).
+- **Blocking or non-blocking reads:** return `ErrEmpty` right away, or wait for data.
+- **Graceful shutdown:** `Close` can drain what's left before it returns, with a timeout.
+- **Zero allocations** on the `Write`/`Read` hot path.
+- **No runtime dependencies:** the package imports only the standard library.
+
+## Install
+
+```sh
+go get github.com/barnowlsnest/go-ringbufferlib/pkg/ringbuffer
+```
+
+Requires Go 1.27 or later.
+
+## Usage
+
+### Keep only the newest bytes
+
+By default, `Write` never blocks. When the buffer is full, it drops the oldest unread bytes, which suits recent-log tails, metrics windows and similar.
+
+```go
+func latestLog() error {
+	rb := ringbuffer.New(8)
+	for _, entry := range []string{"old-log;", "new-log;"} {
+		if _, err := rb.Write([]byte(entry)); err != nil {
+			return fmt.Errorf("write %q: %w", entry, err)
+		}
+	}
+
+	tail := make([]byte, 8)
+	n, err := rb.Read(tail)
+	if err != nil {
+		return fmt.Errorf("read: %w", err)
+	}
+	fmt.Println(string(tail[:n])) // new-log;
+
+	_, err = rb.Read(tail)
+	switch {
+	case errors.Is(err, ringbuffer.ErrEmpty):
+		fmt.Println("no new entries")
+	case err != nil:
+		return fmt.Errorf("read: %w", err)
+	}
+	return nil
+}
+```
+
+In this mode, a single write larger than the capacity fails with `ErrTooLargeForWrite` and writes nothing.
+
+### Stream between goroutines
+
+With `WithOverWrite(false)` nothing is dropped: `Write` blocks until all of `p` is written, so `p` can be larger than the buffer. Combined with `WithReadWaitOnEmpty(true)`, the buffer acts as a bounded pipe.
+
+```go
+func stream(dst io.Writer, src io.Reader) error {
+	rb := ringbuffer.New(64<<10,
+		ringbuffer.WithOverWrite(false),
+		ringbuffer.WithReadWaitOnEmpty(true),
+	)
+
+	produced := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(rb, src)
+		produced <- errors.Join(err, rb.Close())
+	}()
+
+	if _, err := io.Copy(dst, rb); err != nil {
+		// Close unblocks the producer so it can exit.
+		closeErr := rb.Close()
+		<-produced
+		return errors.Join(fmt.Errorf("consume: %w", err), closeErr)
+	}
+	if err := <-produced; err != nil {
+		return fmt.Errorf("produce: %w", err)
+	}
+	return nil
+}
+```
+
+After `Close`, readers still get the remaining bytes, then `io.EOF`.
+
+### Drain on close
+
+```go
+rb := ringbuffer.New(1<<10, ringbuffer.WithDrainOnClose(true, 5*time.Second))
+```
+
+```go
+func shutdown(rb *ringbuffer.RingBuffer) error {
+	if err := rb.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	return nil
+}
+```
+
+`Close` then rejects new writes with `ErrDraining` and waits up to the timeout for readers to empty the buffer. Whatever is still unread after the timeout stays readable until `io.EOF`. `Close` is idempotent.
+
+## Behavior
+
+| Option                                  | Default | Effect                                                                    |
+| --------------------------------------- | ------- | ------------------------------------------------------------------------- |
+| `WithOverWrite(bool)`                   | `true`  | `true`: full buffer drops oldest bytes. `false`: `Write` blocks for room. |
+| `WithReadWaitOnEmpty(bool)`             | `false` | `false`: empty buffer returns `ErrEmpty`. `true`: `Read` blocks for data. |
+| `WithDrainOnClose(bool, time.Duration)` | `false` | `Close` waits up to the timeout for readers to empty the buffer.          |
+
+Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
+
+| Error                 | When                                                                 |
+| --------------------- | -------------------------------------------------------------------- |
+| `ErrEmpty`            | `Read` on an empty buffer without `WithReadWaitOnEmpty(true)`        |
+| `ErrTooLargeForWrite` | Overwrite mode, single write larger than the capacity                |
+| `ErrDraining`         | `Write` while `Close` is draining                                    |
+| `io.EOF`              | `Read` after `Close` once the buffer is empty; `Write` after `Close` |
+
+`Close` wakes every blocked reader and writer.
+
+## Benchmarks
+
+Apple M1 Max, darwin/arm64, Go 1.27. Median of 6 runs (`-benchtime 1s -count 6`), spread under 3%.
+
+### Streaming: 1 MiB from a writer goroutine to a reader goroutine
+
+Each op in `BenchmarkStream` moves **1 MiB**, so ns/op is the time per MiB, not per chunk.
+
+| Pipe               | Chunk | Time per MiB | Throughput |
+| ------------------ | ----- | ------------ | ---------- |
+| ringbuffer, 4 KiB  | 64 B  | 794 µs       | 1.3 GB/s   |
+| ringbuffer, 4 KiB  | 512 B | 163 µs       | 6.4 GB/s   |
+| ringbuffer, 4 KiB  | 4 KiB | 114 µs       | 9.2 GB/s   |
+| ringbuffer, 64 KiB | 4 KiB | 58 µs        | 18.1 GB/s  |
+| `io.Pipe`          | 512 B | 893 µs       | 1.2 GB/s   |
+| `io.Pipe`          | 4 KiB | 129 µs       | 8.1 GB/s   |
+
+- At the same chunk size, the ring buffer is faster than `io.Pipe`: 5.5× at 512 B, 1.1× at 4 KiB. `io.Pipe` has no buffer, so every write waits for a matching read.
+- A bigger buffer helps: going from 4 KiB to 64 KiB doubles throughput, because the goroutines hand off far less often.
+- Small chunks are slow mostly because of goroutine handoffs, not copying. With a 4 KiB buffer and 4 KiB chunks, the writer and reader take turns 256 times per MiB, about 450 ns per handoff. For throughput, use a larger buffer or larger writes.
+- The 3 allocs/op come from the benchmark itself (a channel and goroutine per op), not from the buffer.
+
+### Write then read, single goroutine
+
+| Chunk | Time per op | Throughput | Allocs |
+| ----- | ----------- | ---------- | ------ |
+| 16 B  | 30 ns       | 0.5 GB/s   | 0      |
+| 256 B | 36 ns       | 7.1 GB/s   | 0      |
+| 4 KiB | 147 ns      | 28 GB/s    | 0      |
+
+`BenchmarkParallelWriteRead`, with 256 B chunks across 10 goroutines sharing one buffer, takes about 235 ns per write+read (1.1 GB/s) with zero allocations.
+
+Reproduce:
+
+```sh
+go test -run '^$' -bench . -benchtime 1s -count 6 ./pkg/ringbuffer/
+```
+
+## Development
+
+Tasks use [Task](https://taskfile.dev). `task sanity` runs `go mod tidy`, `go fmt`, `go vet`, `golangci-lint`, tests with the race detector and coverage, and a short benchmark pass.
+
+```sh
+task sanity
+```
+
+## License
+
+[MIT](LICENSE)

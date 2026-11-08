@@ -29,13 +29,27 @@
 //
 // # Streaming
 //
-//	rb := ringbuffer.New(64<<10,
-//		ringbuffer.WithOverWrite(false),
-//		ringbuffer.WithReadWaitOnEmpty(true),
-//	)
-//	go func() {
-//		_, _ = io.Copy(rb, src)
-//		_ = rb.Close()
-//	}()
-//	_, err := io.Copy(dst, rb)
+//	func stream(dst io.Writer, src io.Reader) error {
+//		rb := ringbuffer.New(64<<10,
+//			ringbuffer.WithOverWrite(false),
+//			ringbuffer.WithReadWaitOnEmpty(true),
+//		)
+//
+//		produced := make(chan error, 1)
+//		go func() {
+//			_, err := io.Copy(rb, src)
+//			produced <- errors.Join(err, rb.Close())
+//		}()
+//
+//		if _, err := io.Copy(dst, rb); err != nil {
+//			// Close unblocks the producer so it can exit.
+//			closeErr := rb.Close()
+//			<-produced
+//			return errors.Join(fmt.Errorf("consume: %w", err), closeErr)
+//		}
+//		if err := <-produced; err != nil {
+//			return fmt.Errorf("produce: %w", err)
+//		}
+//		return nil
+//	}
 package ringbuffer
