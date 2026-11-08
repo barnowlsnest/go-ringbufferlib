@@ -22,7 +22,7 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 		if !rb.ShouldWriteWaitOnFull() {
 			return 0, ErrFull
 		}
-		for !rb.shouldStopWaiting() {
+		for rb.isFull() {
 			rb.whenRead.Wait()
 		}
 		if err := rb.validateState(); err != nil {
@@ -32,7 +32,6 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		rb.setOK()
 		return n, nil
 	default:
 		return rb.write(p)
@@ -40,6 +39,9 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 }
 
 func (rb *RingBuffer) write(p []byte) (int, error) {
+	if uint64(len(p)) > rb.size {
+		return 0, ErrTooLargeForWrite
+	}
 	if len(p) == 0 {
 		return 0, nil
 	}
@@ -47,25 +49,22 @@ func (rb *RingBuffer) write(p []byte) (int, error) {
 		switch {
 		case errors.Is(err, ErrNotEnoughToWrite):
 			if !rb.ShouldOverWrite() {
-				rb.setFull()
 				// if explicitly set not to overwrite we write as much we can and drop the rest
 				// return number of written bytes and error
 				return copy(rb.buf[rb.writePos:], p[:avail]), ErrFull
 			}
-			return rb.overWrite(avail, p), nil
+			return rb.overwrite(avail, p), nil
 		default:
 			return 0, err
 		}
 	}
 	n := copy(rb.buf[rb.writePos:], p)
 	rb.writePos += uint64(n)
-	if rb.isWriteOnLastByte() && !rb.ShouldOverWrite() {
-		rb.setFull()
-	}
+	rb.bytesCount += uint64(n)
 	return n, nil
 }
 
-func (rb *RingBuffer) overWrite(avail uint64, p []byte) int {
+func (rb *RingBuffer) overwrite(avail uint64, p []byte) int {
 	toOverWrite := uint64(len(p)) - avail
 	n1 := copy(rb.buf[rb.writePos:], p[:avail])
 	n2 := copy(rb.buf[:toOverWrite], p[avail:])
@@ -80,7 +79,7 @@ func (rb *RingBuffer) isWriteOnLastByte() bool {
 func (rb *RingBuffer) availWrite(p []byte) (uint64, error) {
 	pLen := uint64(len(p))
 	if pLen > rb.size {
-		return 0, ErrBiggerTheWholeBuffer
+		return 0, ErrNotEnoughToWrite
 	}
 	n := rb.size - rb.writePos
 	if n >= pLen {

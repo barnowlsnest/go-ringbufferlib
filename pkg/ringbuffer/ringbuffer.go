@@ -2,24 +2,18 @@ package ringbuffer
 
 import (
 	"errors"
+	"io"
 	"sync"
 	"time"
 )
 
 var (
-	ErrBiggerTheWholeBuffer = errors.New("buffer is too small")
-	ErrNotEnoughToWrite     = errors.New("write: not enough bytes")
-	ErrEmpty                = errors.New("empty: no new bytes to read")
-	ErrFull                 = errors.New("full: no free bytes to write to")
+	ErrNotEnoughToWrite = errors.New("write: not enough available bytes bytes")
+	ErrEmpty            = errors.New("empty: no new bytes to read")
+	ErrFull             = errors.New("full: no free bytes to write to")
+	ErrDraining         = errors.New("drain: decline write")
+	ErrTooLargeForWrite = errors.New("write: write larger than buffer capacity")
 )
-
-const (
-	writeAhead position = iota
-	readBehindOverwrite
-	readAndWriteEqual
-)
-
-const errPos position = -1
 
 type (
 	Option func(rb *RingBuffer)
@@ -28,13 +22,15 @@ type (
 		size                  uint64
 		readPos               uint64
 		writePos              uint64
+		bytesCount            uint64
 		drainTimeout          time.Duration
-		state                 BufferState
 		wgReaders             sync.WaitGroup
 		muState               *sync.Mutex
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
 		buf                   []byte
+		draining              bool
+		closed                bool
 		shouldDrainOnClose    bool
 		shouldReadWaitOnEmpty bool
 		shouldWriteWaitOnFull bool
@@ -52,7 +48,6 @@ func New(size uint64, opts ...Option) *RingBuffer {
 		muState:               &muState,
 		whenRead:              sync.NewCond(&muState),
 		whenWrite:             sync.NewCond(&muState),
-		state:                 empty,
 		shouldOverWrite:       true,
 		shouldDrainOnClose:    false,
 		shouldReadWaitOnEmpty: false,
@@ -103,4 +98,38 @@ func (rb *RingBuffer) ShouldWriteWaitOnFull() bool {
 
 func (rb *RingBuffer) ShouldOverWrite() bool {
 	return rb.shouldOverWrite
+}
+
+func (rb *RingBuffer) isEmpty() bool {
+	return rb.bytesCount == 0 && !rb.closed
+}
+
+func (rb *RingBuffer) isFull() bool {
+	return rb.bytesCount == rb.size && !rb.closed
+}
+
+func (rb *RingBuffer) setDraining() {
+	rb.draining = true
+}
+
+func (rb *RingBuffer) setClosed() {
+	rb.closed = true
+}
+
+func (rb *RingBuffer) isDraining() bool {
+	return rb.draining
+}
+
+func (rb *RingBuffer) isClosed() bool {
+	return rb.closed
+}
+
+func (rb *RingBuffer) validateState() error {
+	switch {
+	case rb.isDraining():
+		return ErrDraining
+	case rb.isClosed():
+		return io.EOF
+	}
+	return nil
 }
