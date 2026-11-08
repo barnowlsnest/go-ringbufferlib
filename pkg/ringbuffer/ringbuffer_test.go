@@ -41,18 +41,18 @@ type step struct {
 	wantErr error
 }
 
-func do(rb *ringbuffer.RingBuffer, st step) (int, string, error) {
+func do(rb *ringbuffer.RingBuffer, st step) (n int, read string, err error) {
 	switch st.op {
 	case opWrite:
-		n, err := rb.Write([]byte(st.data))
-		return n, "", err
+		n, err = rb.Write([]byte(st.data))
 	case opRead:
 		buf := make([]byte, st.readLen)
-		n, err := rb.Read(buf)
-		return n, string(buf[:n]), err
+		n, err = rb.Read(buf)
+		read = string(buf[:n])
 	default:
-		return 0, "", rb.Close()
+		err = rb.Close()
 	}
+	return n, read, err
 }
 
 func (s *RingBufferSuite) TestSequential() {
@@ -266,7 +266,8 @@ func (s *RingBufferSuite) TestBlocking() {
 			wantErr: ringbuffer.ErrDraining,
 		},
 	}
-	for _, tt := range tests {
+	for i := range tests {
+		tt := &tests[i]
 		s.Run(tt.name, func() {
 			synctest.Test(s.T(), func(t *testing.T) {
 				rb := ringbuffer.New(4, tt.opts...)
@@ -470,7 +471,7 @@ func FuzzOverwriteModel(f *testing.F) {
 				fuzzWrite | 1,
 				fuzzRead | 1,
 				fuzzWrite | 2,
-				fuzzRead | 0,
+				fuzzRead,
 			},
 		},
 		{
