@@ -1,35 +1,25 @@
 package ringbuffer
 
+import "io"
+
+// Read is allowed while draining; it returns io.EOF only once the buffer
+// is closed and every remaining byte has been read.
 func (rb *RingBuffer) Read(dest []byte) (int, error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
-	if err := rb.validateState(); err != nil {
-		return 0, err
+	if len(dest) == 0 {
+		return 0, nil
 	}
-	rb.wgReaders.Add(1)
-	defer rb.wgReaders.Done()
-	switch {
-	case rb.isEmpty():
+	for rb.isEmpty() { // isEmpty is false once closed, so Close releases waiters
 		if !rb.ShouldReadWaitOnEmpty() {
 			return 0, ErrEmpty
 		}
-		for rb.isEmpty() {
-			rb.whenWrite.Wait()
-		}
-		if err := rb.validateState(); err != nil {
-			return 0, err
-		}
-		return rb.read(dest)
-	case rb.isFull():
-		n, err := rb.read(dest)
-		if err != nil {
-			return 0, err
-		}
-		rb.whenRead.Broadcast()
-		return n, nil
-	default:
-		return rb.read(dest)
+		rb.whenWrite.Wait()
 	}
+	if rb.closed && rb.bytesCount == 0 {
+		return 0, io.EOF
+	}
+	return rb.read(dest)
 }
 
 func (rb *RingBuffer) read(dest []byte) (int, error) {

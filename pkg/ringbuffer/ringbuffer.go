@@ -10,7 +10,6 @@ import (
 
 var (
 	ErrEmpty            = errors.New("empty: no new bytes to read")
-	ErrFull             = errors.New("full: no free bytes to write to")
 	ErrDraining         = errors.New("drain: decline write")
 	ErrTooLargeForWrite = errors.New("write: write larger than buffer capacity")
 )
@@ -27,7 +26,6 @@ type (
 		writePos              uint64
 		bytesCount            uint64
 		drainTimeout          time.Duration
-		wgReaders             sync.WaitGroup
 		muState               *sync.Mutex
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
@@ -36,11 +34,8 @@ type (
 		closed                bool
 		shouldDrainOnClose    bool
 		shouldReadWaitOnEmpty bool
-		shouldWriteWaitOnFull bool
 		shouldOverWrite       bool
 	}
-	
-	position int
 )
 
 func New(size uint64, opts ...Option) *RingBuffer {
@@ -59,7 +54,6 @@ func New(size uint64, opts ...Option) *RingBuffer {
 		shouldOverWrite:       true,
 		shouldDrainOnClose:    false,
 		shouldReadWaitOnEmpty: false,
-		shouldWriteWaitOnFull: false,
 	}
 	for _, opt := range opts {
 		opt(&rb)
@@ -86,22 +80,12 @@ func WithReadWaitOnEmpty(shouldReadWaitOnEmpty bool) Option {
 	}
 }
 
-func WithWriteWaitOnFull(shouldWriteWaitOnFull bool) Option {
-	return func(rb *RingBuffer) {
-		rb.shouldWriteWaitOnFull = shouldWriteWaitOnFull
-	}
-}
-
 func (rb *RingBuffer) ShouldDrainOnClose() bool {
 	return rb.shouldDrainOnClose
 }
 
 func (rb *RingBuffer) ShouldReadWaitOnEmpty() bool {
 	return rb.shouldReadWaitOnEmpty
-}
-
-func (rb *RingBuffer) ShouldWriteWaitOnFull() bool {
-	return rb.shouldWriteWaitOnFull
 }
 
 func (rb *RingBuffer) ShouldOverWrite() bool {
@@ -118,6 +102,10 @@ func (rb *RingBuffer) isFull() bool {
 
 func (rb *RingBuffer) setDraining() {
 	rb.draining = true
+}
+
+func (rb *RingBuffer) setNotDraining() {
+	rb.draining = false
 }
 
 func (rb *RingBuffer) setClosed() {

@@ -6,34 +6,27 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 	if err := rb.validateState(); err != nil {
 		return 0, err
 	}
-	switch {
-	case rb.isEmpty():
-		n, err := rb.write(p)
-		if err != nil {
-			return 0, err
-		}
-		rb.whenWrite.Broadcast()
-		return n, nil
-	case rb.isFull():
-		if !rb.ShouldWriteWaitOnFull() {
-			return 0, ErrFull
-		}
-		for rb.isFull() {
-			rb.whenRead.Wait()
+	if rb.ShouldOverWrite() {
+		return rb.write(p) // drops oldest, never blocks
+	}
+	// no overwrite: block until all of p is written
+	var total int
+	for len(p) > 0 {
+		for rb.isFull() && !rb.draining {
+			rb.whenRead.Wait() // copyFrom broadcasts after each read
 		}
 		if err := rb.validateState(); err != nil {
-			return 0, err
+			return total, err // report what was actually written
 		}
-		n, err := rb.write(p)
-		if err != nil {
-			return 0, err
-		}
-		return n, nil
-	default:
-		return rb.write(p)
+		free := rb.size - rb.bytesCount
+		n := rb.copyIn(p[:min(uint64(len(p)), free)])
+		total += n
+		p = p[n:]
 	}
+	return total, nil
 }
 
+// write is the overwrite-mode path: it drops the oldest bytes to make room.
 func (rb *RingBuffer) write(p []byte) (int, error) {
 	pLen := uint64(len(p))
 	if pLen == 0 {
@@ -42,28 +35,12 @@ func (rb *RingBuffer) write(p []byte) (int, error) {
 	if pLen > rb.size {
 		return 0, ErrTooLargeForWrite
 	}
-	if len(p) == 0 {
-		return 0, nil
-	}
-	free := rb.size - rb.bytesCount
-	if pLen <= free {
-		return rb.copyIn(p), nil
-	}
-	if rb.ShouldOverWrite() {
+	if free := rb.size - rb.bytesCount; pLen > free {
 		drop := pLen - free
 		rb.readPos = (rb.readPos + drop) & rb.mask
 		rb.bytesCount -= drop
-		return rb.copyIn(p), nil
 	}
-	return rb.copyIn(p[:free]), ErrFull
-}
-
-func (rb *RingBuffer) overwrite(avail uint64, p []byte) int {
-	toOverWrite := uint64(len(p)) - avail
-	n1 := copy(rb.buf[rb.writePos:], p[:avail])
-	n2 := copy(rb.buf[:toOverWrite], p[avail:])
-	rb.writePos = uint64(n2)
-	return n1 + n2
+	return rb.copyIn(p), nil
 }
 
 func (rb *RingBuffer) copyIn(p []byte) int {
@@ -73,8 +50,4 @@ func (rb *RingBuffer) copyIn(p []byte) int {
 	rb.bytesCount += uint64(len(p))
 	rb.whenWrite.Broadcast()
 	return len(p)
-}
-
-func (rb *RingBuffer) isWriteOnLastByte() bool {
-	return rb.writePos >= rb.size
 }
