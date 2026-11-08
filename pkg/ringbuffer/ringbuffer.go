@@ -18,18 +18,18 @@ const defaultBufferSize = 32 * 1024
 
 type (
 	Option func(rb *RingBuffer)
-	
+
 	RingBuffer struct {
+		muState               *sync.Mutex
+		whenRead              *sync.Cond
+		whenWrite             *sync.Cond
+		buf                   []byte
 		size                  uint64
 		mask                  uint64
 		readPos               uint64
 		writePos              uint64
 		bytesCount            uint64
 		drainTimeout          time.Duration
-		muState               *sync.Mutex
-		whenRead              *sync.Cond
-		whenWrite             *sync.Cond
-		buf                   []byte
 		draining              bool
 		closed                bool
 		shouldDrainOnClose    bool

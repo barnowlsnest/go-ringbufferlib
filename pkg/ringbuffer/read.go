@@ -31,10 +31,11 @@ func (rb *RingBuffer) copyFrom(dest []byte) int {
 	if n == 0 {
 		return 0
 	}
-	c := copy(dest[:n], rb.buf[rb.readPos:])
-	copy(dest[c:n], rb.buf)
+	first := min(n, rb.size-rb.readPos)
+	c1 := copy(dest, rb.buf[rb.readPos:rb.readPos+first])
+	c2 := copy(dest[c1:], rb.buf[:n-first])
 	rb.readPos = (rb.readPos + n) & rb.mask
 	rb.bytesCount -= n
 	rb.whenRead.Broadcast()
-	return int(n)
+	return c1 + c2
 }
