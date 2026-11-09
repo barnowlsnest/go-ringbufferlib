@@ -1,5 +1,15 @@
 // Package ringbuffer provides a fixed-capacity byte ring buffer that is safe
-// for concurrent use and implements [io.Reader], [io.Writer] and [io.Closer].
+// for concurrent use and implements [io.Reader], [io.Writer], [io.Closer],
+// [io.ByteReader], [io.ByteWriter], [io.RuneReader], [io.StringWriter] and
+// [fmt.Stringer].
+//
+// Like bytes.Buffer it also has Len, Cap, Available, Reset, Truncate and
+// WriteRune. Truncate returns [ErrTruncateOutOfRange] where bytes.Buffer
+// panics. There is no UnreadByte or UnreadRune.
+//
+// The buffer stores bytes, not runes. Overwriting and Truncate can cut a
+// multi-byte rune, and ReadRune then returns [utf8.RuneError] for each
+// leftover byte.
 //
 // Capacity is rounded up to the next power of two; New(0) uses 32 KiB.
 //

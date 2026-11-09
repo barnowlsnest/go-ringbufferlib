@@ -1,5 +1,7 @@
 package ringbuffer
 
+import "unicode/utf8"
+
 func (rb *RingBuffer) Write(p []byte) (int, error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
@@ -48,4 +50,33 @@ func (rb *RingBuffer) copyIn(p []byte) int {
 	rb.bytesCount += uint64(len(p))
 	rb.whenWrite.Broadcast()
 	return len(p)
+}
+
+func (rb *RingBuffer) WriteString(s string) (int, error) {
+	p := []byte(s)
+	return rb.Write(p)
+}
+
+func (rb *RingBuffer) WriteByte(c byte) error {
+	b := [1]byte{c}
+	_, err := rb.Write(b[:])
+	return err
+}
+
+// WriteRune writes the UTF-8 encoding of r; an invalid rune is written as
+// [utf8.RuneError], like bytes.Buffer. A rune whose encoding is longer than
+// Cap() fails with [ErrTooLargeForWrite] in every mode.
+func (rb *RingBuffer) WriteRune(r rune) (int, error) {
+	var b [utf8.UTFMax]byte
+	n := utf8.EncodeRune(b[:], r)
+	rb.muState.Lock()
+	err := rb.validateState()
+	rb.muState.Unlock()
+	if err != nil {
+		return 0, err
+	}
+	if n > rb.Cap() {
+		return 0, ErrTooLargeForWrite
+	}
+	return rb.Write(b[:n])
 }
