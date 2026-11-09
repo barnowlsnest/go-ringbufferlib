@@ -1,6 +1,9 @@
 package ringbuffer
 
-import "io"
+import (
+	"io"
+	"unicode/utf8"
+)
 
 // Read keeps working while draining and after Close until the buffer is empty,
 // then returns io.EOF.
@@ -20,6 +23,54 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 		return 0, io.EOF
 	}
 	return rb.read(dest)
+}
+
+func (rb *RingBuffer) ReadByte() (byte, error) {
+	var b [1]byte
+	if _, err := rb.Read(b[:]); err != nil {
+		return 0, err
+	}
+	return b[0], nil
+}
+
+// ReadRune decodes one UTF-8 rune. An invalid byte is consumed alone and
+// returned as [utf8.RuneError] with size 1, like bytes.Buffer. When only part
+// of a rune is buffered it returns [ErrEmpty] without consuming anything, or
+// waits for the rest with WithReadWaitOnEmpty(true). After Close, or while
+// draining, no more bytes can arrive, so a partial rune is decoded as invalid.
+// There is no UnreadRune.
+func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
+	rb.muState.Lock()
+	defer rb.muState.Unlock()
+	var b [utf8.UTFMax]byte
+	for {
+		for rb.isEmpty() {
+			if !rb.ShouldReadWaitOnEmpty() {
+				return 0, 0, ErrEmpty
+			}
+			rb.whenWrite.Wait()
+		}
+		if rb.closed && rb.bytesCount == 0 {
+			return 0, 0, io.EOF
+		}
+		n := rb.peek(b[:])
+		if utf8.FullRune(b[:n]) || rb.closed || rb.draining {
+			r, size = utf8.DecodeRune(b[:n])
+			rb.copyFrom(b[:size])
+			return r, size, nil
+		}
+		if !rb.ShouldReadWaitOnEmpty() {
+			return 0, 0, ErrEmpty
+		}
+		rb.whenWrite.Wait()
+	}
+}
+
+func (rb *RingBuffer) peek(dest []byte) int {
+	n := min(uint64(len(dest)), rb.bytesCount)
+	first := min(n, rb.size-rb.readPos)
+	c1 := copy(dest, rb.buf[rb.readPos:rb.readPos+first])
+	return c1 + copy(dest[c1:], rb.buf[:n-first])
 }
 
 func (rb *RingBuffer) read(dest []byte) (int, error) {

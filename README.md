@@ -5,7 +5,7 @@
 [![lint](https://github.com/barnowlsnest/go-ringbufferlib/actions/workflows/lint.yml/badge.svg)](https://github.com/barnowlsnest/go-ringbufferlib/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and implements `io.Reader`, `io.Writer` and `io.Closer`, so it works with `io.Copy` and anything else that streams bytes.
+A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and implements `io.Reader`, `io.Writer` and `io.Closer`, so it works with `io.Copy` and anything else that streams bytes. It also has the familiar `bytes.Buffer` helpers: `ReadByte`, `ReadRune`, `WriteByte`, `WriteString`, `WriteRune`, `String`, `Len`, `Cap`, `Available`, `Reset` and `Truncate`.
 
 - **Two write modes:** keep only the newest bytes (overwrite), or block until readers make room (backpressure).
 - **Blocking or non-blocking reads:** return `ErrEmpty` right away, or wait for data.
@@ -115,12 +115,13 @@ func shutdown(rb *ringbuffer.RingBuffer) error {
 
 Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
 
-| Error                 | When                                                                 |
-| --------------------- | -------------------------------------------------------------------- |
-| `ErrEmpty`            | `Read` on an empty buffer without `WithReadWaitOnEmpty(true)`        |
-| `ErrTooLargeForWrite` | Overwrite mode, single write larger than the capacity                |
-| `ErrDraining`         | `Write` while `Close` is draining                                    |
-| `io.EOF`              | `Read` after `Close` once the buffer is empty; `Write` after `Close` |
+| Error                   | When                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `ErrEmpty`              | `Read`/`ReadByte`/`ReadRune` on an empty buffer (or a partial rune) without `WithReadWaitOnEmpty(true)` |
+| `ErrTooLargeForWrite`   | Overwrite mode, single write larger than the capacity                                                   |
+| `ErrDraining`           | `Write` while `Close` is draining                                                                       |
+| `ErrTruncateOutOfRange` | `Truncate(n)` with `n < 0` or `n > Len()`                                                               |
+| `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                    |
 
 `Close` wakes every blocked reader and writer.
 
