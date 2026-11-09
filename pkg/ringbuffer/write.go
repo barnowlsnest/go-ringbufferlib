@@ -69,6 +69,12 @@ func (rb *RingBuffer) WriteByte(c byte) error {
 func (rb *RingBuffer) WriteRune(r rune) (int, error) {
 	var b [utf8.UTFMax]byte
 	n := utf8.EncodeRune(b[:], r)
+	rb.muState.Lock()
+	err := rb.validateState()
+	rb.muState.Unlock()
+	if err != nil {
+		return 0, err
+	}
 	if n > rb.Cap() {
 		return 0, ErrTooLargeForWrite
 	}

@@ -741,6 +741,7 @@ func (s *RingBufferSuite) TestWriteRune() {
 		name     string
 		size     uint64
 		blocking bool
+		closed   bool
 		r        rune
 		wantN    int
 		wantErr  error
@@ -798,10 +799,32 @@ func (s *RingBufferSuite) TestWriteRune() {
 			wantErr:  ringbuffer.ErrTooLargeForWrite,
 			want:     "",
 		},
+		{
+			name:    "closed buffer rejects rune larger than capacity with EOF",
+			size:    2,
+			closed:  true,
+			r:       '€',
+			wantN:   0,
+			wantErr: io.EOF,
+			want:    "",
+		},
+		{
+			name:     "closed blocking buffer rejects rune larger than capacity with EOF",
+			size:     2,
+			blocking: true,
+			closed:   true,
+			r:        '€',
+			wantN:    0,
+			wantErr:  io.EOF,
+			want:     "",
+		},
 	}
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
 			rb := ringbuffer.New(tt.size, ringbuffer.WithOverWrite(!tt.blocking))
+			if tt.closed {
+				s.Require().NoError(rb.Close())
+			}
 			n, err := rb.WriteRune(tt.r)
 			s.Require().ErrorIs(err, tt.wantErr)
 			s.Require().Equal(tt.wantN, n)
