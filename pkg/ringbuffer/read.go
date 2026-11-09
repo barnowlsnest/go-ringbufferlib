@@ -2,6 +2,7 @@ package ringbuffer
 
 import (
 	"io"
+	"time"
 	"unicode/utf8"
 )
 
@@ -13,11 +14,17 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 	if len(dest) == 0 {
 		return 0, nil
 	}
+	var deadline time.Time
 	for rb.isEmpty() { // isEmpty is false once closed, so Close releases waiters
 		if !rb.ShouldReadWaitOnEmpty() {
 			return 0, ErrEmpty
 		}
-		rb.whenWrite.Wait()
+		if err := rb.waitOn(rb.whenWrite, rb.readTimeout, &deadline); err != nil {
+			return 0, err
+		}
+	}
+	if rb.abortErr != nil {
+		return 0, rb.abortErr
 	}
 	if rb.closed && rb.bytesCount == 0 {
 		return 0, io.EOF
@@ -43,12 +50,18 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
 	var b [utf8.UTFMax]byte
+	var deadline time.Time
 	for {
 		for rb.isEmpty() {
 			if !rb.ShouldReadWaitOnEmpty() {
 				return 0, 0, ErrEmpty
 			}
-			rb.whenWrite.Wait()
+			if err := rb.waitOn(rb.whenWrite, rb.readTimeout, &deadline); err != nil {
+				return 0, 0, err
+			}
+		}
+		if rb.abortErr != nil {
+			return 0, 0, rb.abortErr
 		}
 		if rb.closed && rb.bytesCount == 0 {
 			return 0, 0, io.EOF
@@ -62,7 +75,9 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 		if !rb.ShouldReadWaitOnEmpty() {
 			return 0, 0, ErrEmpty
 		}
-		rb.whenWrite.Wait()
+		if err := rb.waitOn(rb.whenWrite, rb.readTimeout, &deadline); err != nil {
+			return 0, 0, err
+		}
 	}
 }
 

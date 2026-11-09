@@ -2,7 +2,9 @@ package ringbuffer_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -548,6 +550,441 @@ func (s *RingBufferSuite) TestReadRuneWakesWhenDrainingStarts() {
 		require.Equal(t, "\x82", rb.String())
 		<-closed
 	})
+}
+
+func (s *RingBufferSuite) TestTimeoutReleasesBlockedCall() {
+	const timeout = 3 * time.Second
+	readTimeout := []ringbuffer.Option{
+		ringbuffer.WithReadWaitOnEmpty(true),
+		ringbuffer.WithReadTimeout(timeout),
+	}
+	writeTimeout := []ringbuffer.Option{
+		ringbuffer.WithOverWrite(false),
+		ringbuffer.WithWriteTimeout(timeout),
+	}
+	tests := []struct {
+		name     string
+		opts     []ringbuffer.Option
+		prefill  string
+		blocked  step
+		wantN    int
+		wantLeft string
+	}{
+		{
+			name:    "read on empty buffer",
+			opts:    readTimeout,
+			blocked: step{op: opRead, readLen: 4},
+			wantN:   0,
+		},
+		{
+			name:    "read byte on empty buffer",
+			opts:    readTimeout,
+			blocked: step{op: opReadByte},
+			wantN:   0,
+		},
+		{
+			name:    "read rune on empty buffer",
+			opts:    readTimeout,
+			blocked: step{op: opReadRune},
+			wantN:   0,
+		},
+		{
+			name:     "read rune on partial rune",
+			opts:     readTimeout,
+			prefill:  "\xe2\x82",
+			blocked:  step{op: opReadRune},
+			wantN:    0,
+			wantLeft: "\xe2\x82",
+		},
+		{
+			name:     "write into full buffer",
+			opts:     writeTimeout,
+			prefill:  "full",
+			blocked:  step{op: opWrite, data: "more"},
+			wantN:    0,
+			wantLeft: "full",
+		},
+		{
+			name:     "write reports bytes written before timeout",
+			opts:     writeTimeout,
+			prefill:  "ful",
+			blocked:  step{op: opWrite, data: "more"},
+			wantN:    1,
+			wantLeft: "fulm",
+		},
+	}
+	for i := range tests {
+		tt := &tests[i]
+		s.Run(tt.name, func() {
+			synctest.Test(s.T(), func(t *testing.T) {
+				rb := ringbuffer.New(4, tt.opts...)
+				if tt.prefill != "" {
+					_, err := rb.WriteString(tt.prefill)
+					require.NoError(t, err)
+				}
+				start := time.Now()
+
+				n, _, err := do(rb, &tt.blocked)
+				require.ErrorIs(t, err, ringbuffer.ErrTimeout)
+				require.Equal(t, tt.wantN, n)
+				require.Equal(t, timeout, time.Since(start))
+				require.Equal(t, tt.wantLeft, rb.String(), "unread bytes kept")
+			})
+		})
+	}
+}
+
+func (s *RingBufferSuite) TestNonPositiveTimeoutWaitsForever() {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{
+			name:    "zero",
+			timeout: 0,
+		},
+		{
+			name:    "negative",
+			timeout: -time.Second,
+		},
+	}
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			synctest.Test(s.T(), func(t *testing.T) {
+				rb := ringbuffer.New(4,
+					ringbuffer.WithReadWaitOnEmpty(true),
+					ringbuffer.WithReadTimeout(tt.timeout),
+				)
+				done := make(chan error, 1)
+				go func() {
+					_, err := rb.ReadByte()
+					done <- err
+				}()
+				time.Sleep(time.Hour)
+				synctest.Wait()
+				require.Empty(t, done, "read should still block")
+
+				require.NoError(t, rb.WriteByte('!'))
+				require.NoError(t, <-done)
+			})
+		})
+	}
+}
+
+// Each wait shorter than the timeout keeps the call alive even when the whole
+// call takes longer.
+func (s *RingBufferSuite) TestWriteTimeoutRestartsOnProgress() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		const (
+			timeout   = 2 * time.Second
+			readEvery = 1500 * time.Millisecond
+			payload   = "keeps-moving"
+		)
+		rb := ringbuffer.New(4,
+			ringbuffer.WithOverWrite(false),
+			ringbuffer.WithWriteTimeout(timeout),
+		)
+		var drained bytes.Buffer
+		readerDone := make(chan error, 1)
+		go func() {
+			chunk := make([]byte, 4)
+			for drained.Len() < len(payload) {
+				time.Sleep(readEvery)
+				n, err := rb.Read(chunk)
+				if err != nil {
+					readerDone <- err
+					return
+				}
+				drained.Write(chunk[:n])
+			}
+			readerDone <- nil
+		}()
+
+		start := time.Now()
+		n, err := rb.WriteString(payload)
+		require.NoError(t, err)
+		require.Equal(t, len(payload), n)
+		require.Greater(t, time.Since(start), timeout, "whole write outlasts the timeout")
+		require.NoError(t, <-readerDone)
+		require.Equal(t, payload, drained.String())
+	})
+}
+
+func (s *RingBufferSuite) TestReadTimeoutAllowsSlowContinuousStream() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		const (
+			timeout    = 2 * time.Second
+			writeEvery = 1500 * time.Millisecond
+		)
+		chunks := []string{"first;", "second;", "third;"}
+		rb := ringbuffer.New(64,
+			ringbuffer.WithReadWaitOnEmpty(true),
+			ringbuffer.WithReadTimeout(timeout),
+		)
+		produced := make(chan error, 1)
+		go func() {
+			for _, c := range chunks {
+				time.Sleep(writeEvery)
+				if _, err := rb.WriteString(c); err != nil {
+					produced <- err
+					return
+				}
+			}
+			produced <- rb.Close()
+		}()
+
+		start := time.Now()
+		var got bytes.Buffer
+		_, err := io.Copy(&got, rb)
+		require.NoError(t, err)
+		require.NoError(t, <-produced)
+		require.Equal(t, "first;second;third;", got.String())
+		require.Equal(t, time.Duration(len(chunks))*writeEvery, time.Since(start))
+	})
+}
+
+func (s *RingBufferSuite) TestTimeoutIgnoredByCallsThatDoNotBlock() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		rb := ringbuffer.New(4,
+			ringbuffer.WithReadTimeout(time.Nanosecond),
+			ringbuffer.WithWriteTimeout(time.Nanosecond),
+		)
+		_, err := rb.ReadByte()
+		require.ErrorIs(t, err, ringbuffer.ErrEmpty, "non-waiting read still reports empty")
+
+		_, err = rb.WriteString("over")
+		require.NoError(t, err)
+		_, err = rb.WriteString("full")
+		require.NoError(t, err, "overwrite-mode write never waits")
+		require.Equal(t, "full", rb.String())
+	})
+}
+
+var errStreamAborted = errors.New("stream aborted by caller")
+
+func (s *RingBufferSuite) TestContextCancelReleasesBlockedCall() {
+	waitOnEmpty := []ringbuffer.Option{ringbuffer.WithReadWaitOnEmpty(true)}
+	backpressure := []ringbuffer.Option{ringbuffer.WithOverWrite(false)}
+	tests := []struct {
+		name    string
+		opts    []ringbuffer.Option
+		prefill string
+		blocked step
+		wantN   int
+	}{
+		{
+			name:    "read on empty buffer",
+			opts:    waitOnEmpty,
+			blocked: step{op: opRead, readLen: 4},
+			wantN:   0,
+		},
+		{
+			name:    "read byte on empty buffer",
+			opts:    waitOnEmpty,
+			blocked: step{op: opReadByte},
+			wantN:   0,
+		},
+		{
+			name:    "read rune on empty buffer",
+			opts:    waitOnEmpty,
+			blocked: step{op: opReadRune},
+			wantN:   0,
+		},
+		{
+			name:    "read rune on partial rune",
+			opts:    waitOnEmpty,
+			prefill: "\xe2\x82",
+			blocked: step{op: opReadRune},
+			wantN:   0,
+		},
+		{
+			name:    "write into full buffer",
+			opts:    backpressure,
+			prefill: "full",
+			blocked: step{op: opWrite, data: "more"},
+			wantN:   0,
+		},
+		{
+			name:    "write reports bytes written before cancel",
+			opts:    backpressure,
+			prefill: "ful",
+			blocked: step{op: opWrite, data: "more"},
+			wantN:   1,
+		},
+	}
+	for i := range tests {
+		tt := &tests[i]
+		s.Run(tt.name, func() {
+			synctest.Test(s.T(), func(t *testing.T) {
+				ctx, cancel := context.WithCancelCause(t.Context())
+				opts := append([]ringbuffer.Option{ringbuffer.WithContext(ctx)}, tt.opts...)
+				rb := ringbuffer.New(4, opts...)
+				if tt.prefill != "" {
+					_, err := rb.WriteString(tt.prefill)
+					require.NoError(t, err)
+				}
+
+				type result struct {
+					n   int
+					err error
+				}
+				done := make(chan result, 1)
+				go func() {
+					n, _, err := do(rb, &tt.blocked)
+					done <- result{n: n, err: err}
+				}()
+				synctest.Wait()
+				require.Empty(t, done, "operation should block")
+
+				start := time.Now()
+				cancel(errStreamAborted)
+				res := <-done
+				require.Zero(t, time.Since(start), "released as soon as ctx is canceled")
+				require.ErrorIs(t, res.err, errStreamAborted)
+				require.Equal(t, tt.wantN, res.n)
+			})
+		})
+	}
+}
+
+// Unlike Close, cancel discards unread bytes: every later call fails.
+func (s *RingBufferSuite) TestCanceledContextFailsLaterCalls() {
+	tests := []struct {
+		name string
+		call step
+	}{
+		{
+			name: "read with unread bytes",
+			call: step{op: opRead, readLen: 4},
+		},
+		{
+			name: "read byte with unread bytes",
+			call: step{op: opReadByte},
+		},
+		{
+			name: "read rune with unread bytes",
+			call: step{op: opReadRune},
+		},
+		{
+			name: "write",
+			call: step{op: opWrite, data: "more"},
+		},
+	}
+	for i := range tests {
+		tt := &tests[i]
+		s.Run(tt.name, func() {
+			synctest.Test(s.T(), func(t *testing.T) {
+				ctx, cancel := context.WithCancelCause(t.Context())
+				rb := ringbuffer.New(8, ringbuffer.WithContext(ctx))
+				_, err := rb.WriteString("unread")
+				require.NoError(t, err)
+				cancel(errStreamAborted)
+				synctest.Wait()
+
+				n, _, err := do(rb, &tt.call)
+				require.ErrorIs(t, err, errStreamAborted)
+				require.Zero(t, n)
+			})
+		})
+	}
+}
+
+func (s *RingBufferSuite) TestCancelWithoutCauseReturnsContextCanceled() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		rb := ringbuffer.New(4, ringbuffer.WithContext(ctx))
+		cancel()
+		synctest.Wait()
+
+		_, err := rb.WriteString("late")
+		require.ErrorIs(t, err, context.Canceled)
+	})
+}
+
+func (s *RingBufferSuite) TestAlreadyCanceledContextAbortsAtNew() {
+	ctx, cancel := context.WithCancelCause(s.T().Context())
+	cancel(errStreamAborted)
+
+	rb := ringbuffer.New(4, ringbuffer.WithContext(ctx))
+	_, err := rb.WriteString("first")
+	s.Require().ErrorIs(err, errStreamAborted, "no call slips through before the abort")
+}
+
+func (s *RingBufferSuite) TestContextCancelStopsDrainOnClose() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		const drainTimeout = 5 * time.Second
+		ctx, cancel := context.WithCancelCause(t.Context())
+		rb := ringbuffer.New(8,
+			ringbuffer.WithContext(ctx),
+			ringbuffer.WithDrainOnClose(true, drainTimeout),
+		)
+		_, err := rb.WriteString("unread")
+		require.NoError(t, err)
+
+		closed := make(chan error, 1)
+		go func() {
+			closed <- rb.Close()
+		}()
+		synctest.Wait()
+		require.Empty(t, closed, "close should be draining")
+
+		start := time.Now()
+		cancel(errStreamAborted)
+		require.NoError(t, <-closed)
+		require.Zero(t, time.Since(start), "drain stops as soon as ctx is canceled")
+
+		_, err = rb.ReadByte()
+		require.ErrorIs(t, err, errStreamAborted)
+	})
+}
+
+func (s *RingBufferSuite) TestCancelAfterCloseKeepsLeftoverReadable() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		ctx, cancel := context.WithCancelCause(t.Context())
+		rb := ringbuffer.New(8, ringbuffer.WithContext(ctx))
+		const leftover = "leftover"
+		_, err := rb.WriteString(leftover)
+		require.NoError(t, err)
+		require.NoError(t, rb.Close())
+		cancel(errStreamAborted)
+		synctest.Wait()
+
+		got, err := io.ReadAll(rb)
+		require.NoError(t, err, "a closed buffer ends with io.EOF, not the cause")
+		require.Equal(t, leftover, string(got))
+	})
+}
+
+func (s *RingBufferSuite) TestLastWithContextWins() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		replaced, cancelReplaced := context.WithCancel(t.Context())
+		defer cancelReplaced()
+		effective, cancelEffective := context.WithCancelCause(t.Context())
+		rb := ringbuffer.New(4,
+			ringbuffer.WithContext(replaced),
+			ringbuffer.WithContext(effective),
+		)
+
+		cancelReplaced()
+		synctest.Wait()
+		_, err := rb.WriteString("kept")
+		require.NoError(t, err, "replaced context has no effect")
+
+		cancelEffective(errStreamAborted)
+		synctest.Wait()
+		_, err = rb.WriteString("late")
+		require.ErrorIs(t, err, errStreamAborted)
+	})
+}
+
+func (s *RingBufferSuite) TestNilContextIsIgnored() {
+	var missing context.Context
+	rb := ringbuffer.New(4, ringbuffer.WithContext(missing))
+
+	const payload = "safe"
+	_, err := rb.WriteString(payload)
+	s.Require().NoError(err)
+	s.Require().Equal(payload, rb.String())
 }
 
 var (

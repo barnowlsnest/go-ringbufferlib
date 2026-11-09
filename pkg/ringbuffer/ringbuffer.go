@@ -1,6 +1,7 @@
 package ringbuffer
 
 import (
+	"context"
 	"errors"
 	"io"
 	"math/bits"
@@ -14,6 +15,7 @@ var (
 	ErrDraining           = errors.New("drain: decline write")
 	ErrTooLargeForWrite   = errors.New("write: write larger than buffer capacity")
 	ErrTruncateOutOfRange = errors.New("truncate: n out of range")
+	ErrTimeout            = errors.New("timeout: no progress within the timeout")
 )
 
 const defaultBufferSize = 32 * 1024
@@ -25,6 +27,8 @@ type (
 		muState               *sync.Mutex
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
+		abortErr              error
+		stopCtx               func() bool
 		buf                   []byte
 		size                  uint64
 		mask                  uint64
@@ -32,6 +36,8 @@ type (
 		writePos              uint64
 		bytesCount            uint64
 		drainTimeout          time.Duration
+		readTimeout           time.Duration
+		writeTimeout          time.Duration
 		draining              bool
 		closed                bool
 		shouldDrainOnClose    bool
@@ -81,6 +87,53 @@ func WithDrainOnClose(shouldDrainOnClose bool, drainTimeout time.Duration) Optio
 func WithReadWaitOnEmpty(shouldReadWaitOnEmpty bool) Option {
 	return func(rb *RingBuffer) {
 		rb.shouldReadWaitOnEmpty = shouldReadWaitOnEmpty
+	}
+}
+
+// WithReadTimeout limits how long one blocked Read, ReadByte or ReadRune waits
+// for data before failing with [ErrTimeout]. A timeout of zero or less waits
+// forever.
+func WithReadTimeout(timeout time.Duration) Option {
+	return func(rb *RingBuffer) {
+		rb.readTimeout = timeout
+	}
+}
+
+// WithWriteTimeout limits how long a blocked Write waits for room before
+// failing with [ErrTimeout]. The wait restarts each time some of p is written,
+// so a long stream fails only after timeout without progress. A timeout of
+// zero or less waits forever.
+func WithWriteTimeout(timeout time.Duration) Option {
+	return func(rb *RingBuffer) {
+		rb.writeTimeout = timeout
+	}
+}
+
+// WithContext aborts the buffer once ctx is done: blocked calls wake at once
+// and every later call fails with context.Cause(ctx), even with unread bytes
+// left. Canceling after Close has no effect. A nil ctx is ignored, and a later
+// WithContext replaces an earlier one.
+func WithContext(ctx context.Context) Option {
+	return func(rb *RingBuffer) {
+		if rb.stopCtx != nil {
+			rb.stopCtx()
+			rb.stopCtx = nil
+		}
+		if ctx == nil {
+			return
+		}
+		abort := func() {
+			rb.muState.Lock()
+			defer rb.muState.Unlock()
+			rb.abort(context.Cause(ctx))
+		}
+		// AfterFunc runs abort in its own goroutine, so a few calls could
+		// otherwise slip through on an already-canceled ctx.
+		if ctx.Err() != nil {
+			abort()
+			return
+		}
+		rb.stopCtx = context.AfterFunc(ctx, abort)
 	}
 }
 
@@ -187,13 +240,50 @@ func (rb *RingBuffer) isClosed() bool {
 	return rb.closed
 }
 
+func (rb *RingBuffer) abort(cause error) {
+	if rb.closed {
+		return
+	}
+	rb.abortErr = cause
+	rb.setClosed()
+	rb.setNotDraining()
+	rb.whenRead.Broadcast()
+	rb.whenWrite.Broadcast()
+}
+
 func (rb *RingBuffer) validateState() error {
 	switch {
+	case rb.abortErr != nil:
+		return rb.abortErr
 	case rb.isDraining():
 		return ErrDraining
 	case rb.isClosed():
 		return io.EOF
 	}
+	return nil
+}
+
+// waitOn sets *deadline on its first call, so one deadline covers every wait
+// of a call until the caller resets it to zero.
+func (rb *RingBuffer) waitOn(c *sync.Cond, timeout time.Duration, deadline *time.Time) error {
+	if timeout <= 0 {
+		c.Wait()
+		return nil
+	}
+	if deadline.IsZero() {
+		*deadline = time.Now().Add(timeout)
+	}
+	left := time.Until(*deadline)
+	if left <= 0 {
+		return ErrTimeout
+	}
+	wake := time.AfterFunc(left, func() {
+		rb.muState.Lock()
+		c.Broadcast()
+		rb.muState.Unlock()
+	})
+	c.Wait()
+	wake.Stop()
 	return nil
 }
 

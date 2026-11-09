@@ -34,6 +34,9 @@ func (rb *RingBuffer) Close() error {
 		}
 	}
 	rb.muState.Lock()
+	if rb.stopCtx != nil {
+		rb.stopCtx()
+	}
 	rb.setClosed()
 	rb.setNotDraining()
 	rb.whenRead.Broadcast()

@@ -9,8 +9,10 @@ A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and impl
 
 - **Two write modes:** keep only the newest bytes (overwrite), or block until readers make room (backpressure).
 - **Blocking or non-blocking reads:** return `ErrEmpty` right away, or wait for data.
+- **Stall timeouts:** a blocked call gives up with `ErrTimeout` after a set time without progress, without limiting how long a healthy stream runs.
+- **Cancellation:** tie the buffer to a `context.Context` to stop a stream and wake every blocked call.
 - **Graceful shutdown:** `Close` can drain what's left before it returns, with a timeout.
-- **Zero allocations** on the `Write`/`Read` hot path.
+- **Zero allocations** on the `Write`/`Read` hot path. A blocked call with a timeout set allocates one timer per wait.
 - **No runtime dependencies:** the package imports only the standard library.
 
 ## Install
@@ -88,6 +90,66 @@ func stream(dst io.Writer, src io.Reader) error {
 
 After `Close`, readers still get the remaining bytes, then `io.EOF`.
 
+### Give up on a stalled stream
+
+Blocking calls wait forever by default. A timeout bounds how long a call waits without progress, then fails it with `ErrTimeout`. It does not limit the whole stream: each `Read` waits afresh, and a `Write` restarts its wait whenever part of `p` is written, so `io.Copy` over a slow but steady stream keeps going.
+
+```go
+func newPipe() *ringbuffer.RingBuffer {
+	return ringbuffer.New(64<<10,
+		ringbuffer.WithOverWrite(false),
+		ringbuffer.WithReadWaitOnEmpty(true),
+		ringbuffer.WithReadTimeout(5*time.Second),
+		ringbuffer.WithWriteTimeout(5*time.Second),
+	)
+}
+
+func consume(dst io.Writer, rb *ringbuffer.RingBuffer) error {
+	_, err := io.Copy(dst, rb)
+	switch {
+	case errors.Is(err, ringbuffer.ErrTimeout):
+		return fmt.Errorf("producer stalled: %w", errors.Join(err, rb.Close()))
+	case err != nil:
+		return fmt.Errorf("consume: %w", err)
+	}
+	return nil
+}
+```
+
+### Cancel a stream
+
+`WithContext` ties the buffer to a context. When it is canceled, blocked calls wake at once and every call fails with `context.Cause(ctx)`, even with unread bytes left, so a consumer can tell a canceled stream from one that finished with `io.EOF`. Use timeouts to catch a stalled stream and the context to stop a healthy one.
+
+```go
+func streamUntilCanceled(ctx context.Context, dst io.Writer, src io.Reader) error {
+	rb := ringbuffer.New(64<<10,
+		ringbuffer.WithContext(ctx),
+		ringbuffer.WithOverWrite(false),
+		ringbuffer.WithReadWaitOnEmpty(true),
+	)
+
+	produced := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(rb, src)
+		produced <- errors.Join(err, rb.Close())
+	}()
+
+	_, err := io.Copy(dst, rb)
+	switch {
+	case errors.Is(err, context.Canceled):
+		return fmt.Errorf("stream canceled: %w", errors.Join(err, <-produced))
+	case err != nil:
+		return errors.Join(fmt.Errorf("consume: %w", err), rb.Close(), <-produced)
+	}
+	if err := <-produced; err != nil {
+		return fmt.Errorf("produce: %w", err)
+	}
+	return nil
+}
+```
+
+After a cancel, `streamUntilCanceled` still waits for the producer goroutine, which exits on its next `Write`. If `src` can block forever, pass it the same context too. `Close` stops watching the context, so a long-lived context does not keep closed buffers alive.
+
 ### Drain on close
 
 ```go
@@ -107,11 +169,14 @@ func shutdown(rb *ringbuffer.RingBuffer) error {
 
 ## Behavior
 
-| Option                                  | Default | Effect                                                                    |
-| --------------------------------------- | ------- | ------------------------------------------------------------------------- |
-| `WithOverWrite(bool)`                   | `true`  | `true`: full buffer drops oldest bytes. `false`: `Write` blocks for room. |
-| `WithReadWaitOnEmpty(bool)`             | `false` | `false`: empty buffer returns `ErrEmpty`. `true`: `Read` blocks for data. |
-| `WithDrainOnClose(bool, time.Duration)` | `false` | `Close` waits up to the timeout for readers to empty the buffer.          |
+| Option                                  | Default | Effect                                                                               |
+| --------------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `WithOverWrite(bool)`                   | `true`  | `true`: full buffer drops oldest bytes. `false`: `Write` blocks for room.            |
+| `WithReadWaitOnEmpty(bool)`             | `false` | `false`: empty buffer returns `ErrEmpty`. `true`: `Read` blocks for data.            |
+| `WithDrainOnClose(bool, time.Duration)` | `false` | `Close` waits up to the timeout for readers to empty the buffer.                     |
+| `WithReadTimeout(time.Duration)`        | `0`     | Blocked read fails with `ErrTimeout` after waiting this long for data.               |
+| `WithWriteTimeout(time.Duration)`       | `0`     | Blocked write fails with `ErrTimeout` after this long without progress.              |
+| `WithContext(context.Context)`          | none    | When ctx is done, blocked calls wake and every call fails with `context.Cause(ctx)`. |
 
 Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
 
@@ -119,11 +184,13 @@ Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `ErrEmpty`              | `Read`/`ReadByte`/`ReadRune` on an empty buffer (or a partial rune more bytes can complete) without `WithReadWaitOnEmpty(true)` |
 | `ErrTooLargeForWrite`   | Overwrite mode, single write larger than the capacity; `WriteRune` of a rune longer than the capacity                           |
+| `ErrTimeout`            | A blocked call waited longer than `WithReadTimeout`/`WithWriteTimeout` without progress                                         |
 | `ErrDraining`           | `Write` while `Close` is draining                                                                                               |
 | `ErrTruncateOutOfRange` | `Truncate(n)` with `n < 0` or `n > Len()`                                                                                       |
 | `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                                            |
+| `context.Cause(ctx)`    | Any call after the `WithContext` context is done, even with unread bytes left                                                   |
 
-`Close` wakes every blocked reader and writer.
+`Close` and a canceled `WithContext` context wake every blocked reader and writer. A timeout wakes only the call that waited too long.
 
 ## Benchmarks
 
