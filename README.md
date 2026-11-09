@@ -115,13 +115,13 @@ func shutdown(rb *ringbuffer.RingBuffer) error {
 
 Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
 
-| Error                   | When                                                                                                    |
-| ----------------------- | ------------------------------------------------------------------------------------------------------- |
-| `ErrEmpty`              | `Read`/`ReadByte`/`ReadRune` on an empty buffer (or a partial rune) without `WithReadWaitOnEmpty(true)` |
-| `ErrTooLargeForWrite`   | Overwrite mode, single write larger than the capacity; `WriteRune` of a rune longer than the capacity   |
-| `ErrDraining`           | `Write` while `Close` is draining                                                                       |
-| `ErrTruncateOutOfRange` | `Truncate(n)` with `n < 0` or `n > Len()`                                                               |
-| `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                    |
+| Error                   | When                                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `ErrEmpty`              | `Read`/`ReadByte`/`ReadRune` on an empty buffer (or a partial rune more bytes can complete) without `WithReadWaitOnEmpty(true)` |
+| `ErrTooLargeForWrite`   | Overwrite mode, single write larger than the capacity; `WriteRune` of a rune longer than the capacity                           |
+| `ErrDraining`           | `Write` while `Close` is draining                                                                                               |
+| `ErrTruncateOutOfRange` | `Truncate(n)` with `n < 0` or `n > Len()`                                                                                       |
+| `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                                            |
 
 `Close` wakes every blocked reader and writer.
 
