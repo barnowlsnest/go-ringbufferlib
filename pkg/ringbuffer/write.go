@@ -64,11 +64,13 @@ func (rb *RingBuffer) WriteByte(c byte) error {
 }
 
 // WriteRune writes the UTF-8 encoding of r; an invalid rune is written as
-// [utf8.RuneError], like bytes.Buffer. A rune is written in one piece only when
-// Cap() >= [utf8.UTFMax]. Smaller buffers fail with [ErrTooLargeForWrite] in
-// overwrite mode, or split the rune across blocking writes.
+// [utf8.RuneError], like bytes.Buffer. A rune whose encoding is longer than
+// Cap() fails with [ErrTooLargeForWrite] in every mode.
 func (rb *RingBuffer) WriteRune(r rune) (int, error) {
 	var b [utf8.UTFMax]byte
 	n := utf8.EncodeRune(b[:], r)
+	if n > rb.Cap() {
+		return 0, ErrTooLargeForWrite
+	}
 	return rb.Write(b[:n])
 }

@@ -36,9 +36,9 @@ func (rb *RingBuffer) ReadByte() (byte, error) {
 // ReadRune decodes one UTF-8 rune. An invalid byte is consumed alone and
 // returned as [utf8.RuneError] with size 1, like bytes.Buffer. When only part
 // of a rune is buffered it returns [ErrEmpty] without consuming anything, or
-// waits for the rest with WithReadWaitOnEmpty(true). After Close, or while
-// draining, no more bytes can arrive, so a partial rune is decoded as invalid.
-// There is no UnreadRune.
+// waits for the rest with WithReadWaitOnEmpty(true). After Close, while
+// draining, or when the partial rune fills the buffer, the rest cannot arrive,
+// so a partial rune is decoded as invalid. There is no UnreadRune.
 func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
@@ -54,7 +54,7 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 			return 0, 0, io.EOF
 		}
 		n := rb.peek(b[:])
-		if utf8.FullRune(b[:n]) || rb.closed || rb.draining {
+		if utf8.FullRune(b[:n]) || rb.closed || rb.draining || rb.bytesCount == rb.size {
 			r, size = utf8.DecodeRune(b[:n])
 			rb.copyFrom(b[:size])
 			return r, size, nil

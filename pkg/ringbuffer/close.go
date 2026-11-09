@@ -15,6 +15,7 @@ func (rb *RingBuffer) Close() error {
 	if rb.ShouldDrainOnClose() {
 		rb.setDraining()
 		rb.whenRead.Broadcast()
+		rb.whenWrite.Broadcast()
 	}
 	rb.muState.Unlock()
 	if rb.ShouldDrainOnClose() {

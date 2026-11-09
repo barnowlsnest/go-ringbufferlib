@@ -484,6 +484,72 @@ func (s *RingBufferSuite) TestDrainOnClose() {
 	}
 }
 
+func (s *RingBufferSuite) TestReadRuneOnBufferSmallerThanRuneDoesNotDeadlock() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		rb := ringbuffer.New(2,
+			ringbuffer.WithOverWrite(false),
+			ringbuffer.WithReadWaitOnEmpty(true),
+		)
+		const owl = "🦉"
+		type result struct {
+			n   int
+			err error
+		}
+		written := make(chan result, 1)
+		go func() {
+			n, err := rb.WriteString(owl)
+			written <- result{n: n, err: err}
+		}()
+		for i := range len(owl) {
+			r, size, err := rb.ReadRune()
+			require.NoError(t, err, "rune %d", i)
+			require.Equal(t, utf8.RuneError, r, "rune %d", i)
+			require.Equal(t, 1, size, "rune %d", i)
+		}
+		res := <-written
+		require.NoError(t, res.err)
+		require.Equal(t, len(owl), res.n)
+	})
+}
+
+func (s *RingBufferSuite) TestReadRuneWakesWhenDrainingStarts() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		const drainTimeout = 5 * time.Second
+		rb := ringbuffer.New(8,
+			ringbuffer.WithReadWaitOnEmpty(true),
+			ringbuffer.WithDrainOnClose(true, drainTimeout),
+		)
+		_, err := rb.WriteString("\xe2\x82")
+		require.NoError(t, err)
+
+		type result struct {
+			r    rune
+			size int
+			err  error
+		}
+		got := make(chan result, 1)
+		go func() {
+			r, size, err := rb.ReadRune()
+			got <- result{r: r, size: size, err: err}
+		}()
+		synctest.Wait()
+
+		start := time.Now()
+		closed := make(chan struct{})
+		go func() {
+			_ = rb.Close()
+			close(closed)
+		}()
+		res := <-got
+		require.Zero(t, time.Since(start), "reader wakes as soon as draining starts")
+		require.NoError(t, res.err)
+		require.Equal(t, utf8.RuneError, res.r)
+		require.Equal(t, 1, res.size)
+		require.Equal(t, "\x82", rb.String())
+		<-closed
+	})
+}
+
 var (
 	_ io.ByteReader   = (*ringbuffer.RingBuffer)(nil)
 	_ io.RuneReader   = (*ringbuffer.RingBuffer)(nil)
@@ -672,12 +738,13 @@ func (s *RingBufferSuite) TestWriteByte() {
 
 func (s *RingBufferSuite) TestWriteRune() {
 	tests := []struct {
-		name    string
-		size    uint64
-		r       rune
-		wantN   int
-		wantErr error
-		want    string
+		name     string
+		size     uint64
+		blocking bool
+		r        rune
+		wantN    int
+		wantErr  error
+		want     string
 	}{
 		{
 			name:  "one-byte rune",
@@ -722,10 +789,19 @@ func (s *RingBufferSuite) TestWriteRune() {
 			wantErr: ringbuffer.ErrTooLargeForWrite,
 			want:    "",
 		},
+		{
+			name:     "rune larger than capacity rejected in blocking mode",
+			size:     2,
+			blocking: true,
+			r:        '€',
+			wantN:    0,
+			wantErr:  ringbuffer.ErrTooLargeForWrite,
+			want:     "",
+		},
 	}
 	for _, tt := range tests {
 		s.Run(tt.name, func() {
-			rb := ringbuffer.New(tt.size)
+			rb := ringbuffer.New(tt.size, ringbuffer.WithOverWrite(!tt.blocking))
 			n, err := rb.WriteRune(tt.r)
 			s.Require().ErrorIs(err, tt.wantErr)
 			s.Require().Equal(tt.wantN, n)
@@ -799,6 +875,14 @@ func (s *RingBufferSuite) TestReadRune() {
 			size:     8,
 			writes:   []string{"\xe2\x82"},
 			closed:   true,
+			wantRune: utf8.RuneError,
+			wantSize: 1,
+			wantLeft: "\x82",
+		},
+		{
+			name:     "partial rune filling buffer yields replacement for one byte",
+			size:     2,
+			writes:   []string{"\xe2\x82"},
 			wantRune: utf8.RuneError,
 			wantSize: 1,
 			wantLeft: "\x82",
