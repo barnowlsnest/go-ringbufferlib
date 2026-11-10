@@ -180,15 +180,15 @@ func shutdown(rb *ringbuffer.RingBuffer) error {
 
 Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
 
-| Error                   | When                                                                                                                            |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `ErrEmpty`              | `Read`/`ReadByte`/`ReadRune` on an empty buffer (or a partial rune more bytes can complete) without `WithReadWaitOnEmpty(true)` |
-| `ErrTooLargeForWrite`   | Overwrite mode, single write larger than the capacity; `WriteRune` of a rune longer than the capacity                           |
-| `ErrTimeout`            | A blocked call waited longer than `WithReadTimeout`/`WithWriteTimeout` without progress                                         |
-| `ErrDraining`           | `Write` while `Close` is draining                                                                                               |
-| `ErrTruncateOutOfRange` | `Truncate(n)` with `n < 0` or `n > Len()`                                                                                       |
-| `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                                            |
-| `context.Cause(ctx)`    | Any call after the `WithContext` context is done, even with unread bytes left                                                   |
+| Error                   | When                                                                                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ErrEmpty`              | `Read`/`ReadByte`/`ReadRune` on an empty buffer (or a partial rune more bytes can complete) without `WithReadWaitOnEmpty(true)`                   |
+| `ErrTooLargeForWrite`   | Overwrite mode, single write larger than the capacity; `WriteRune` of a rune longer than the capacity                                             |
+| `ErrTimeout`            | A blocked call waited longer than `WithReadTimeout`/`WithWriteTimeout` without progress; also matches `os.ErrDeadlineExceeded` and `os.IsTimeout` |
+| `ErrDraining`           | `Write` while `Close` is draining                                                                                                                 |
+| `ErrTruncateOutOfRange` | `Truncate(n)` with `n < 0` or `n > Len()`                                                                                                         |
+| `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                                                              |
+| `context.Cause(ctx)`    | Any call after the `WithContext` context is done, even with unread bytes left                                                                     |
 
 `Close` and a canceled `WithContext` context wake every blocked reader and writer. A timeout fails only the call that waited too long; other calls blocked on the same side wake briefly, re-check and go back to waiting.
 
