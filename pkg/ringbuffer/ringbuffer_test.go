@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"net"
+	"os"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -893,6 +895,51 @@ func (s *RingBufferSuite) TestFinishedTimedWaitDoesNotKeepBufferAlive() {
 			runtime.GC()
 			return abandoned.Value() == nil
 		}, time.Minute, time.Millisecond, "no timer stays armed once nobody waits")
+	})
+}
+
+// Callers that get the buffer as a plain io.Reader or io.Writer recognize a
+// timeout only through these standard-library checks.
+func (s *RingBufferSuite) TestTimeoutMatchesStandardTimeoutChecks() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		rb := ringbuffer.New(4,
+			ringbuffer.WithReadWaitOnEmpty(true),
+			ringbuffer.WithReadTimeout(time.Second),
+		)
+		_, timedOut := rb.ReadByte()
+		require.Error(t, timedOut)
+
+		checks := []struct {
+			name    string
+			matches func(err error) bool
+		}{
+			{
+				name: "errors.Is ErrTimeout",
+				matches: func(err error) bool {
+					return errors.Is(err, ringbuffer.ErrTimeout)
+				},
+			},
+			{
+				name: "errors.Is os.ErrDeadlineExceeded",
+				matches: func(err error) bool {
+					return errors.Is(err, os.ErrDeadlineExceeded)
+				},
+			},
+			{
+				name:    "os.IsTimeout",
+				matches: os.IsTimeout,
+			},
+			{
+				name: "net.Error Timeout",
+				matches: func(err error) bool {
+					var netErr net.Error
+					return errors.As(err, &netErr) && netErr.Timeout()
+				},
+			},
+		}
+		for _, check := range checks {
+			require.True(t, check.matches(timedOut), check.name)
+		}
 	})
 }
 

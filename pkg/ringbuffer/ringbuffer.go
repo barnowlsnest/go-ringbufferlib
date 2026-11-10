@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"math/bits"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -17,8 +18,17 @@ var (
 	ErrDraining           = errors.New("drain: decline write")
 	ErrTooLargeForWrite   = errors.New("write: write larger than buffer capacity")
 	ErrTruncateOutOfRange = errors.New("truncate: n out of range")
-	ErrTimeout            = errors.New("timeout: no progress within the timeout")
+	// ErrTimeout also matches os.ErrDeadlineExceeded, os.IsTimeout and a
+	// net.Error Timeout check, so io.Reader and io.Writer callers see a timeout.
+	ErrTimeout error = timeoutError{}
 )
+
+type timeoutError struct{}
+
+func (timeoutError) Error() string   { return "timeout: no progress within the timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return true }
+func (timeoutError) Unwrap() error   { return os.ErrDeadlineExceeded }
 
 const defaultBufferSize = 32 * 1024
 
