@@ -11,6 +11,9 @@ import (
 func (rb *RingBuffer) Read(dest []byte) (int, error) {
 	rb.muState.Lock()
 	defer rb.muState.Unlock()
+	if err := rb.validateContext(); err != nil {
+		return 0, err
+	}
 	if len(dest) == 0 {
 		return 0, nil
 	}
@@ -23,8 +26,8 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 			return 0, err
 		}
 	}
-	if rb.abortErr != nil {
-		return 0, rb.abortErr
+	if err := rb.validateContext(); err != nil {
+		return 0, err
 	}
 	if rb.closed && rb.bytesCount == 0 {
 		return 0, io.EOF
@@ -52,6 +55,9 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 	var b [utf8.UTFMax]byte
 	var deadline time.Time
 	for {
+		if err := rb.validateContext(); err != nil {
+			return 0, 0, err
+		}
 		for rb.isEmpty() {
 			if !rb.ShouldReadWaitOnEmpty() {
 				return 0, 0, ErrEmpty
@@ -60,8 +66,8 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 				return 0, 0, err
 			}
 		}
-		if rb.abortErr != nil {
-			return 0, 0, rb.abortErr
+		if err := rb.validateContext(); err != nil {
+			return 0, 0, err
 		}
 		if rb.closed && rb.bytesCount == 0 {
 			return 0, 0, io.EOF

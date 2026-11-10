@@ -901,6 +901,31 @@ func (s *RingBufferSuite) TestCancelWithoutCauseReturnsContextCanceled() {
 	})
 }
 
+func (s *RingBufferSuite) TestCancelImmediatelyFailsBeforeAbortCallback() {
+	ctx, cancel := context.WithCancelCause(s.T().Context())
+	rb := ringbuffer.New(8, ringbuffer.WithContext(ctx))
+	_, err := rb.WriteString("unread")
+	s.Require().NoError(err)
+
+	cancel(errStreamAborted)
+	_, err = rb.ReadByte()
+	s.Require().ErrorIs(err, errStreamAborted)
+	s.Require().Equal("unread", rb.String())
+}
+
+func (s *RingBufferSuite) TestCancelImmediatelyBeforeCloseAbortsBuffer() {
+	ctx, cancel := context.WithCancelCause(s.T().Context())
+	rb := ringbuffer.New(8, ringbuffer.WithContext(ctx))
+	_, err := rb.WriteString("unread")
+	s.Require().NoError(err)
+
+	cancel(errStreamAborted)
+	s.Require().NoError(rb.Close())
+	_, err = rb.ReadByte()
+	s.Require().ErrorIs(err, errStreamAborted)
+	s.Require().Equal("unread", rb.String())
+}
+
 func (s *RingBufferSuite) TestAlreadyCanceledContextAbortsAtNew() {
 	ctx, cancel := context.WithCancelCause(s.T().Context())
 	cancel(errStreamAborted)

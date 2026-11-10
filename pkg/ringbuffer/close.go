@@ -34,6 +34,10 @@ func (rb *RingBuffer) Close() error {
 		}
 	}
 	rb.muState.Lock()
+	if err := rb.validateContext(); err != nil {
+		rb.muState.Unlock()
+		return nil
+	}
 	if rb.stopCtx != nil {
 		rb.stopCtx()
 	}

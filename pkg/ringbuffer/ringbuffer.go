@@ -28,6 +28,7 @@ type (
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
 		abortErr              error
+		ctx                   context.Context
 		stopCtx               func() bool
 		buf                   []byte
 		size                  uint64
@@ -119,9 +120,11 @@ func WithContext(ctx context.Context) Option {
 			rb.stopCtx()
 			rb.stopCtx = nil
 		}
+		rb.ctx = nil
 		if ctx == nil {
 			return
 		}
+		rb.ctx = ctx
 		abort := func() {
 			rb.muState.Lock()
 			defer rb.muState.Unlock()
@@ -252,15 +255,27 @@ func (rb *RingBuffer) abort(cause error) {
 }
 
 func (rb *RingBuffer) validateState() error {
+	if err := rb.validateContext(); err != nil {
+		return err
+	}
 	switch {
-	case rb.abortErr != nil:
-		return rb.abortErr
 	case rb.isDraining():
 		return ErrDraining
 	case rb.isClosed():
 		return io.EOF
 	}
 	return nil
+}
+
+func (rb *RingBuffer) validateContext() error {
+	if rb.abortErr != nil {
+		return rb.abortErr
+	}
+	if rb.ctx == nil || rb.closed || rb.ctx.Err() == nil {
+		return nil
+	}
+	rb.abort(context.Cause(rb.ctx))
+	return rb.abortErr
 }
 
 // waitOn sets *deadline on its first call, so one deadline covers every wait
