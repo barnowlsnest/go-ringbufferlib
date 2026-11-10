@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"math/bits"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"weak"
 )
 
 var (
@@ -31,6 +33,7 @@ type (
 		ctx                   context.Context
 		stopCtx               func() bool
 		buf                   []byte
+		ctxCleanup            runtime.Cleanup
 		ctxGeneration         uint64
 		size                  uint64
 		mask                  uint64
@@ -42,6 +45,7 @@ type (
 		writeTimeout          time.Duration
 		draining              bool
 		closed                bool
+		built                 bool
 		shouldDrainOnClose    bool
 		shouldReadWaitOnEmpty bool
 		shouldOverWrite       bool
@@ -68,6 +72,7 @@ func New(size uint64, opts ...Option) *RingBuffer {
 	for _, opt := range opts {
 		opt(&rb)
 	}
+	rb.built = true
 	return &rb
 }
 
@@ -117,34 +122,49 @@ func WithWriteTimeout(timeout time.Duration) Option {
 // WithContext replaces an earlier one.
 func WithContext(ctx context.Context) Option {
 	return func(rb *RingBuffer) {
-		rb.muState.Lock()
-		defer rb.muState.Unlock()
-		if rb.stopCtx != nil {
-			rb.stopCtx()
-			rb.stopCtx = nil
-		}
-		rb.ctxGeneration++
-		generation := rb.ctxGeneration
-		rb.ctx = nil
 		if ctx == nil {
 			return
 		}
-		rb.ctx = ctx
-		abort := func() {
-			rb.muState.Lock()
-			defer rb.muState.Unlock()
-			if rb.ctxGeneration != generation {
-				return
-			}
-			rb.abort(context.Cause(ctx))
-		}
-		// AfterFunc runs abort in its own goroutine, so a few calls could
-		// otherwise slip through on an already-canceled ctx.
-		if ctx.Err() != nil {
-			rb.abort(context.Cause(ctx))
+		rb.muState.Lock()
+		defer rb.muState.Unlock()
+		if rb.closed {
 			return
 		}
-		rb.stopCtx = context.AfterFunc(ctx, abort)
+		if rb.stopCtx != nil {
+			rb.stopCtx()
+			rb.stopCtx = nil
+			rb.ctxCleanup.Stop()
+			rb.ctxCleanup = runtime.Cleanup{}
+		}
+		rb.ctxGeneration++
+		generation := rb.ctxGeneration
+		rb.ctx = ctx
+		// Held weakly so a long-lived ctx does not keep an abandoned buffer alive.
+		abandonable := weak.Make(rb)
+		abort := func() {
+			live := abandonable.Value()
+			if live == nil {
+				return
+			}
+			live.muState.Lock()
+			defer live.muState.Unlock()
+			if live.ctxGeneration != generation {
+				return
+			}
+			live.abort(context.Cause(ctx))
+		}
+		// Inside New a later WithContext may still replace a done ctx, and
+		// AfterFunc would abort from its own goroutine before that. Nothing
+		// can be blocked yet, so validateContext aborts on the first call.
+		if ctx.Err() != nil {
+			if rb.built {
+				rb.abort(context.Cause(ctx))
+			}
+			return
+		}
+		stop := context.AfterFunc(ctx, abort)
+		rb.stopCtx = stop
+		rb.ctxCleanup = runtime.AddCleanup(rb, func(stop func() bool) { stop() }, stop)
 	}
 }
 

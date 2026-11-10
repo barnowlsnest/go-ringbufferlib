@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"runtime"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"testing/synctest"
 	"time"
 	"unicode/utf8"
+	"weak"
 
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -48,6 +51,25 @@ func (ctx *callbackContext) cancel() {
 	ctx.err = context.Canceled
 	close(ctx.done)
 	ctx.callback()
+}
+
+// watchedContext counts the AfterFunc registrations that are still active.
+type watchedContext struct {
+	context.Context
+	done     chan struct{}
+	watchers atomic.Int32
+}
+
+func (ctx *watchedContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *watchedContext) AfterFunc(func()) func() bool {
+	ctx.watchers.Add(1)
+	return func() bool {
+		ctx.watchers.Add(-1)
+		return true
+	}
 }
 
 func TestRingBufferSuite(t *testing.T) {
@@ -769,6 +791,40 @@ func (s *RingBufferSuite) TestReadTimeoutAllowsSlowContinuousStream() {
 	})
 }
 
+func (s *RingBufferSuite) TestReadRuneTimeoutRestartsOnProgress() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		const (
+			timeout    = 2 * time.Second
+			writeEvery = 1500 * time.Millisecond
+			fourByte   = '😀'
+		)
+		encoded := utf8.AppendRune(nil, fourByte)
+		rb := ringbuffer.New(8,
+			ringbuffer.WithReadWaitOnEmpty(true),
+			ringbuffer.WithReadTimeout(timeout),
+		)
+		produced := make(chan error, 1)
+		go func() {
+			for _, b := range encoded {
+				time.Sleep(writeEvery)
+				if err := rb.WriteByte(b); err != nil {
+					produced <- err
+					return
+				}
+			}
+			produced <- nil
+		}()
+
+		start := time.Now()
+		r, size, err := rb.ReadRune()
+		require.NoError(t, err, "each byte arrives within the timeout")
+		require.Equal(t, fourByte, r)
+		require.Equal(t, len(encoded), size)
+		require.Equal(t, time.Duration(len(encoded))*writeEvery, time.Since(start))
+		require.NoError(t, <-produced)
+	})
+}
+
 func (s *RingBufferSuite) TestTimeoutIgnoredByCallsThatDoNotBlock() {
 	synctest.Test(s.T(), func(t *testing.T) {
 		rb := ringbuffer.New(4,
@@ -1028,6 +1084,55 @@ func (s *RingBufferSuite) TestLastWithContextWins() {
 	})
 }
 
+func (s *RingBufferSuite) TestAlreadyCanceledContextIsReplaceable() {
+	replaced, cancelReplaced := context.WithCancelCause(s.T().Context())
+	cancelReplaced(errStreamAborted)
+
+	rb := ringbuffer.New(4,
+		ringbuffer.WithContext(replaced),
+		ringbuffer.WithContext(s.T().Context()),
+	)
+	_, err := rb.WriteString("kept")
+	s.Require().NoError(err, "replaced context has no effect")
+}
+
+func (s *RingBufferSuite) TestAlreadyCanceledContextWakesBlockedCallOnLiveBuffer() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		rb := ringbuffer.New(4, ringbuffer.WithReadWaitOnEmpty(true))
+		blocked := make(chan error, 1)
+		go func() {
+			_, err := rb.ReadByte()
+			blocked <- err
+		}()
+		synctest.Wait()
+		require.Empty(t, blocked, "read should be waiting for data")
+
+		canceled, cancel := context.WithCancelCause(t.Context())
+		cancel(errStreamAborted)
+		ringbuffer.WithContext(canceled)(rb)
+		synctest.Wait()
+
+		require.Len(t, blocked, 1, "blocked read wakes without another event")
+		require.ErrorIs(t, <-blocked, errStreamAborted)
+	})
+}
+
+func (s *RingBufferSuite) TestReplacedContextIsNotRetainedByBuffer() {
+	replaced := &watchedContext{
+		Context: context.Background(),
+		done:    make(chan struct{}),
+	}
+	rb := ringbuffer.New(4, ringbuffer.WithContext(replaced))
+	ringbuffer.WithContext(s.T().Context())(rb)
+	collectable := weak.Make(replaced)
+
+	s.Require().Eventually(func() bool {
+		runtime.GC()
+		return collectable.Value() == nil
+	}, 5*time.Second, time.Millisecond, "a live buffer does not keep a replaced ctx alive")
+	runtime.KeepAlive(rb)
+}
+
 func (s *RingBufferSuite) TestStartedCallbackFromReplacedContextIsIgnored() {
 	synctest.Test(s.T(), func(t *testing.T) {
 		replaced := &callbackContext{
@@ -1045,6 +1150,43 @@ func (s *RingBufferSuite) TestStartedCallbackFromReplacedContextIsIgnored() {
 	})
 }
 
+func (s *RingBufferSuite) TestAbandonedBufferIsCollectedWhileContextLives() {
+	ctx, cancel := context.WithCancel(s.T().Context())
+	defer cancel()
+	abandoned := weak.Make(ringbuffer.New(4, ringbuffer.WithContext(ctx)))
+
+	s.Require().Eventually(func() bool {
+		runtime.GC()
+		return abandoned.Value() == nil
+	}, 5*time.Second, time.Millisecond, "a live ctx does not keep an unclosed buffer alive")
+}
+
+func (s *RingBufferSuite) TestAbandonedBufferStopsWatchingContext() {
+	watched := &watchedContext{
+		Context: context.Background(),
+		done:    make(chan struct{}),
+	}
+	ringbuffer.New(4, ringbuffer.WithContext(watched))
+	s.Require().EqualValues(1, watched.watchers.Load())
+
+	s.Require().Eventually(func() bool {
+		runtime.GC()
+		return watched.watchers.Load() == 0
+	}, 5*time.Second, time.Millisecond, "collecting the buffer unregisters it from ctx")
+}
+
+func (s *RingBufferSuite) TestWithContextOnClosedBufferDoesNotWatch() {
+	watched := &watchedContext{
+		Context: context.Background(),
+		done:    make(chan struct{}),
+	}
+	rb := ringbuffer.New(4)
+	s.Require().NoError(rb.Close())
+
+	ringbuffer.WithContext(watched)(rb)
+	s.Require().Zero(watched.watchers.Load(), "a closed buffer has nothing left to abort")
+}
+
 func (s *RingBufferSuite) TestNilContextIsIgnored() {
 	var missing context.Context
 	rb := ringbuffer.New(4, ringbuffer.WithContext(missing))
@@ -1053,6 +1195,19 @@ func (s *RingBufferSuite) TestNilContextIsIgnored() {
 	_, err := rb.WriteString(payload)
 	s.Require().NoError(err)
 	s.Require().Equal(payload, rb.String())
+}
+
+func (s *RingBufferSuite) TestNilContextKeepsEarlierContext() {
+	effective, cancelEffective := context.WithCancelCause(s.T().Context())
+	var missing context.Context
+	rb := ringbuffer.New(4,
+		ringbuffer.WithContext(effective),
+		ringbuffer.WithContext(missing),
+	)
+
+	cancelEffective(errStreamAborted)
+	_, err := rb.WriteString("late")
+	s.Require().ErrorIs(err, errStreamAborted, "nil ctx does not detach the earlier one")
 }
 
 var (

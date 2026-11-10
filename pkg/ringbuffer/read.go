@@ -54,6 +54,7 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 	defer rb.muState.Unlock()
 	var b [utf8.UTFMax]byte
 	var deadline time.Time
+	var peeked int
 	for {
 		if err := rb.validateContext(); err != nil {
 			return 0, 0, err
@@ -81,10 +82,20 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 		if !rb.ShouldReadWaitOnEmpty() {
 			return 0, 0, ErrEmpty
 		}
-		if err := rb.waitOn(rb.whenWrite, rb.readTimeout, &deadline); err != nil {
+		if err := rb.waitForRuneRest(n, &peeked, &deadline); err != nil {
 			return 0, 0, err
 		}
 	}
+}
+
+// waitForRuneRest restarts the deadline when more of the rune has arrived
+// since the last wait, so only a stalled rune times out.
+func (rb *RingBuffer) waitForRuneRest(n int, peeked *int, deadline *time.Time) error {
+	if n > *peeked {
+		*deadline = time.Time{}
+	}
+	*peeked = n
+	return rb.waitOn(rb.whenWrite, rb.readTimeout, deadline)
 }
 
 func (rb *RingBuffer) peek(dest []byte) int {
