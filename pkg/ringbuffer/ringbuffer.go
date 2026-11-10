@@ -29,9 +29,9 @@ type (
 		whenWrite             *sync.Cond
 		abortErr              error
 		ctx                   context.Context
-		ctxGeneration         uint64
 		stopCtx               func() bool
 		buf                   []byte
+		ctxGeneration         uint64
 		size                  uint64
 		mask                  uint64
 		readPos               uint64
