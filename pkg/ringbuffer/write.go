@@ -22,7 +22,7 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 			if err := rb.waitOn(&rb.writeWake, rb.writeTimeout, &deadline); err != nil {
 				return total, err
 			}
-			if err := rb.validateState(); err != nil {
+			if err := rb.validateLifecycle(); err != nil {
 				return total, err
 			}
 		}

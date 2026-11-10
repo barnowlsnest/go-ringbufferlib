@@ -301,6 +301,10 @@ func (rb *RingBuffer) validateState() error {
 	if err := rb.validateContext(); err != nil {
 		return err
 	}
+	return rb.validateLifecycle()
+}
+
+func (rb *RingBuffer) validateLifecycle() error {
 	switch {
 	case rb.isDraining():
 		return ErrDraining
