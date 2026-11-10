@@ -24,6 +24,32 @@ type RingBufferSuite struct {
 	suite.Suite
 }
 
+type callbackContext struct {
+	context.Context
+	done     chan struct{}
+	callback func()
+	err      error
+}
+
+func (ctx *callbackContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *callbackContext) Err() error {
+	return ctx.err
+}
+
+func (ctx *callbackContext) AfterFunc(callback func()) func() bool {
+	ctx.callback = callback
+	return func() bool { return false }
+}
+
+func (ctx *callbackContext) cancel() {
+	ctx.err = context.Canceled
+	close(ctx.done)
+	ctx.callback()
+}
+
 func TestRingBufferSuite(t *testing.T) {
 	suite.Run(t, new(RingBufferSuite))
 }
@@ -999,6 +1025,23 @@ func (s *RingBufferSuite) TestLastWithContextWins() {
 		synctest.Wait()
 		_, err = rb.WriteString("late")
 		require.ErrorIs(t, err, errStreamAborted)
+	})
+}
+
+func (s *RingBufferSuite) TestStartedCallbackFromReplacedContextIsIgnored() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		replaced := &callbackContext{
+			Context: context.Background(),
+			done:    make(chan struct{}),
+		}
+		rb := ringbuffer.New(4, ringbuffer.WithContext(replaced))
+		ringbuffer.WithContext(context.Background())(rb)
+
+		replaced.cancel()
+		synctest.Wait()
+
+		_, err := rb.WriteString("kept")
+		require.NoError(t, err)
 	})
 }
 
