@@ -22,12 +22,9 @@ func (rb *RingBuffer) Read(dest []byte) (int, error) {
 		if !rb.ShouldReadWaitOnEmpty() {
 			return 0, ErrEmpty
 		}
-		if err := rb.waitOn(rb.whenWrite, rb.readTimeout, &deadline); err != nil {
+		if err := rb.waitOn(&rb.readWake, rb.readTimeout, &deadline); err != nil {
 			return 0, err
 		}
-	}
-	if err := rb.validateContext(); err != nil {
-		return 0, err
 	}
 	if rb.closed && rb.bytesCount == 0 {
 		return 0, io.EOF
@@ -55,20 +52,17 @@ func (rb *RingBuffer) ReadRune() (r rune, size int, err error) {
 	var b [utf8.UTFMax]byte
 	var deadline time.Time
 	var peeked int
+	if err := rb.validateContext(); err != nil {
+		return 0, 0, err
+	}
 	for {
-		if err := rb.validateContext(); err != nil {
-			return 0, 0, err
-		}
 		for rb.isEmpty() {
 			if !rb.ShouldReadWaitOnEmpty() {
 				return 0, 0, ErrEmpty
 			}
-			if err := rb.waitOn(rb.whenWrite, rb.readTimeout, &deadline); err != nil {
+			if err := rb.waitOn(&rb.readWake, rb.readTimeout, &deadline); err != nil {
 				return 0, 0, err
 			}
-		}
-		if err := rb.validateContext(); err != nil {
-			return 0, 0, err
 		}
 		if rb.closed && rb.bytesCount == 0 {
 			return 0, 0, io.EOF
@@ -95,7 +89,7 @@ func (rb *RingBuffer) waitForRuneRest(n int, peeked *int, deadline *time.Time) e
 		*deadline = time.Time{}
 	}
 	*peeked = n
-	return rb.waitOn(rb.whenWrite, rb.readTimeout, deadline)
+	return rb.waitOn(&rb.readWake, rb.readTimeout, deadline)
 }
 
 func (rb *RingBuffer) peek(dest []byte) int {

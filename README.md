@@ -12,7 +12,7 @@ A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and impl
 - **Stall timeouts:** a blocked call gives up with `ErrTimeout` after a set time without progress, without limiting how long a healthy stream runs.
 - **Cancellation:** tie the buffer to a `context.Context` to stop a stream and wake every blocked call.
 - **Graceful shutdown:** `Close` can drain what's left before it returns, with a timeout.
-- **Zero allocations** on the `Write`/`Read` hot path. A blocked call with a timeout set allocates one timer per wait.
+- **Zero allocations** on the `Write`/`Read` hot path, including blocked calls with a timeout set: each buffer creates its two wake-up timers once and reuses them.
 - **No runtime dependencies:** the package imports only the standard library.
 
 ## Install
@@ -190,11 +190,11 @@ Capacity is rounded up to the next power of two. `New(0)` uses 32 KiB.
 | `io.EOF`                | `Read` after `Close` once the buffer is empty; `Write` after `Close`                                                            |
 | `context.Cause(ctx)`    | Any call after the `WithContext` context is done, even with unread bytes left                                                   |
 
-`Close` and a canceled `WithContext` context wake every blocked reader and writer. A timeout wakes only the call that waited too long.
+`Close` and a canceled `WithContext` context wake every blocked reader and writer. A timeout fails only the call that waited too long; other calls blocked on the same side wake briefly, re-check and go back to waiting.
 
 ## Benchmarks
 
-Apple M1 Max, darwin/arm64, Go 1.27. Median of 6 runs (`-benchtime 1s -count 6`), spread under 3%.
+Apple M1 Max, darwin/arm64, Go 1.27. Median of 6 runs (`-benchtime 1s -count 6`), spread under 3% for most rows and at most 9%.
 
 ### Streaming: 1 MiB from a writer goroutine to a reader goroutine
 
@@ -202,27 +202,29 @@ Each op in `BenchmarkStream` moves **1 MiB**, so ns/op is the time per MiB, not 
 
 | Pipe               | Chunk | Time per MiB | Throughput |
 | ------------------ | ----- | ------------ | ---------- |
-| ringbuffer, 4 KiB  | 64 B  | 794 µs       | 1.3 GB/s   |
-| ringbuffer, 4 KiB  | 512 B | 163 µs       | 6.4 GB/s   |
-| ringbuffer, 4 KiB  | 4 KiB | 114 µs       | 9.2 GB/s   |
-| ringbuffer, 64 KiB | 4 KiB | 58 µs        | 18.1 GB/s  |
-| `io.Pipe`          | 512 B | 893 µs       | 1.2 GB/s   |
-| `io.Pipe`          | 4 KiB | 129 µs       | 8.1 GB/s   |
+| ringbuffer, 4 KiB  | 64 B  | 974 µs       | 1.1 GB/s   |
+| ringbuffer, 4 KiB  | 512 B | 169 µs       | 6.2 GB/s   |
+| ringbuffer, 4 KiB  | 4 KiB | 122 µs       | 8.6 GB/s   |
+| ringbuffer, 64 KiB | 4 KiB | 61 µs        | 17.2 GB/s  |
+| `io.Pipe`          | 512 B | 895 µs       | 1.2 GB/s   |
+| `io.Pipe`          | 4 KiB | 130 µs       | 8.1 GB/s   |
 
-- At the same chunk size, the ring buffer is faster than `io.Pipe`: 5.5× at 512 B, 1.1× at 4 KiB. `io.Pipe` has no buffer, so every write waits for a matching read.
+- At the same chunk size, the ring buffer is faster than `io.Pipe`: 5.3× at 512 B, 1.1× at 4 KiB. `io.Pipe` has no buffer, so every write waits for a matching read.
 - A bigger buffer helps: going from 4 KiB to 64 KiB doubles throughput, because the goroutines hand off far less often.
-- Small chunks are slow mostly because of goroutine handoffs, not copying. With a 4 KiB buffer and 4 KiB chunks, the writer and reader take turns 256 times per MiB, about 450 ns per handoff. For throughput, use a larger buffer or larger writes.
+- Small chunks are slow mostly because of goroutine handoffs, not copying. With a 4 KiB buffer and 4 KiB chunks, the writer and reader take turns 256 times per MiB, about 480 ns per handoff. For throughput, use a larger buffer or larger writes.
 - The 3 allocs/op come from the benchmark itself (a channel and goroutine per op), not from the buffer.
 
 ### Write then read, single goroutine
 
 | Chunk | Time per op | Throughput | Allocs |
 | ----- | ----------- | ---------- | ------ |
-| 16 B  | 30 ns       | 0.5 GB/s   | 0      |
-| 256 B | 36 ns       | 7.1 GB/s   | 0      |
+| 16 B  | 33 ns       | 0.5 GB/s   | 0      |
+| 256 B | 38 ns       | 6.7 GB/s   | 0      |
 | 4 KiB | 147 ns      | 28 GB/s    | 0      |
 
-`BenchmarkParallelWriteRead`, with 256 B chunks across 10 goroutines sharing one buffer, takes about 235 ns per write+read (1.1 GB/s) with zero allocations.
+`BenchmarkParallelWriteRead`, with 256 B chunks across 10 goroutines sharing one buffer, takes about 230 ns per write+read (1.1 GB/s) with zero allocations.
+
+A `WithContext` context adds about 3 ns per write+read, however deeply it is wrapped (`BenchmarkWriteReadWithContext`). When every call blocks (`BenchmarkBlockedHandoff`, a 1-byte round trip between two goroutines), a round trip takes about 375 ns without timeouts and 615 ns with them, with zero allocations either way.
 
 Reproduce:
 

@@ -25,13 +25,25 @@ const defaultBufferSize = 32 * 1024
 type (
 	Option func(rb *RingBuffer)
 
+	// condTimer wakes every waiter on cond at the earliest deadline among them,
+	// so timed waits reuse one timer per cond instead of one per wait.
+	condTimer struct {
+		cond    *sync.Cond
+		timer   *time.Timer
+		at      time.Time
+		waiters int
+	}
+
 	RingBuffer struct {
 		muState               *sync.Mutex
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
 		abortErr              error
 		ctx                   context.Context
+		ctxDone               <-chan struct{}
 		stopCtx               func() bool
+		readWake              condTimer
+		writeWake             condTimer
 		buf                   []byte
 		ctxCleanup            runtime.Cleanup
 		ctxGeneration         uint64
@@ -69,6 +81,8 @@ func New(size uint64, opts ...Option) *RingBuffer {
 		shouldDrainOnClose:    false,
 		shouldReadWaitOnEmpty: false,
 	}
+	rb.readWake.cond = rb.whenWrite
+	rb.writeWake.cond = rb.whenRead
 	for _, opt := range opts {
 		opt(&rb)
 	}
@@ -139,6 +153,7 @@ func WithContext(ctx context.Context) Option {
 		rb.ctxGeneration++
 		generation := rb.ctxGeneration
 		rb.ctx = ctx
+		rb.ctxDone = ctx.Done()
 		// Held weakly so a long-lived ctx does not keep an abandoned buffer alive.
 		abandonable := weak.Make(rb)
 		abort := func() {
@@ -299,19 +314,27 @@ func (rb *RingBuffer) validateContext() error {
 	if rb.abortErr != nil {
 		return rb.abortErr
 	}
-	if rb.ctx == nil || rb.closed || rb.ctx.Err() == nil {
+	if rb.ctxDone == nil || rb.closed {
 		return nil
 	}
-	rb.abort(context.Cause(rb.ctx))
-	return rb.abortErr
+	// A receive on the cached Done channel costs the same at any ctx depth,
+	// while ctx.Err() walks the whole chain.
+	select {
+	case <-rb.ctxDone:
+		rb.abort(context.Cause(rb.ctx))
+		return rb.abortErr
+	default:
+		return nil
+	}
 }
 
 // waitOn sets *deadline on its first call, so one deadline covers every wait
-// of a call until the caller resets it to zero.
-func (rb *RingBuffer) waitOn(c *sync.Cond, timeout time.Duration, deadline *time.Time) error {
+// of a call until the caller resets it to zero. It re-checks the context after
+// waking, so callers need not poll it again.
+func (rb *RingBuffer) waitOn(t *condTimer, timeout time.Duration, deadline *time.Time) error {
 	if timeout <= 0 {
-		c.Wait()
-		return nil
+		t.cond.Wait()
+		return rb.validateContext()
 	}
 	if deadline.IsZero() {
 		*deadline = time.Now().Add(timeout)
@@ -320,14 +343,44 @@ func (rb *RingBuffer) waitOn(c *sync.Cond, timeout time.Duration, deadline *time
 	if left <= 0 {
 		return ErrTimeout
 	}
-	wake := time.AfterFunc(left, func() {
-		rb.muState.Lock()
-		c.Broadcast()
-		rb.muState.Unlock()
-	})
-	c.Wait()
-	wake.Stop()
-	return nil
+	t.arm(*deadline, left)
+	t.waiters++
+	t.cond.Wait()
+	t.waiters--
+	if t.waiters == 0 {
+		t.disarm()
+	}
+	return rb.validateContext()
+}
+
+// arm moves the timer earlier when deadline comes before the one it holds.
+// Waiters with a later deadline wake early, see time left, and re-arm.
+func (t *condTimer) arm(deadline time.Time, left time.Duration) {
+	if !t.at.IsZero() && !t.at.After(deadline) {
+		return
+	}
+	t.at = deadline
+	if t.timer == nil {
+		t.timer = time.AfterFunc(left, t.fire)
+		return
+	}
+	t.timer.Reset(left)
+}
+
+// disarm stops the timer once nobody waits, so it neither fires for nobody
+// nor keeps the buffer reachable.
+func (t *condTimer) disarm() {
+	t.at = time.Time{}
+	if t.timer != nil {
+		t.timer.Stop()
+	}
+}
+
+func (t *condTimer) fire() {
+	t.cond.L.Lock()
+	defer t.cond.L.Unlock()
+	t.at = time.Time{}
+	t.cond.Broadcast()
 }
 
 func nextPow2(n uint64) uint64 {

@@ -19,12 +19,12 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 	for len(p) > 0 {
 		for rb.isFull() && !rb.draining {
 			// copyFrom broadcasts after each read
-			if err := rb.waitOn(rb.whenRead, rb.writeTimeout, &deadline); err != nil {
+			if err := rb.waitOn(&rb.writeWake, rb.writeTimeout, &deadline); err != nil {
 				return total, err
 			}
-		}
-		if err := rb.validateState(); err != nil {
-			return total, err
+			if err := rb.validateState(); err != nil {
+				return total, err
+			}
 		}
 		free := rb.size - rb.bytesCount
 		n := rb.copyIn(p[:min(uint64(len(p)), free)])
