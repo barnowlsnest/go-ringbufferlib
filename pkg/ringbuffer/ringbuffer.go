@@ -141,7 +141,7 @@ func WithContext(ctx context.Context) Option {
 		// AfterFunc runs abort in its own goroutine, so a few calls could
 		// otherwise slip through on an already-canceled ctx.
 		if ctx.Err() != nil {
-			abort()
+			rb.abort(context.Cause(ctx))
 			return
 		}
 		rb.stopCtx = context.AfterFunc(ctx, abort)
