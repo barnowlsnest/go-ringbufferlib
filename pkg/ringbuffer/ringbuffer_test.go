@@ -825,6 +825,77 @@ func (s *RingBufferSuite) TestReadRuneTimeoutRestartsOnProgress() {
 	})
 }
 
+// Readers share one timer, so each must still fail at its own deadline while
+// single bytes wake them all and leave some waiting with an older deadline.
+func (s *RingBufferSuite) TestStaggeredReadTimeoutsFailAtOwnDeadline() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		const (
+			timeout     = 2 * time.Second
+			readers     = 8
+			arriveEvery = 250 * time.Millisecond
+			trickles    = 3
+		)
+		rb := ringbuffer.New(8,
+			ringbuffer.WithReadWaitOnEmpty(true),
+			ringbuffer.WithReadTimeout(timeout),
+		)
+		type outcome struct {
+			err     error
+			elapsed time.Duration
+		}
+		outcomes := make(chan outcome, readers)
+		for i := range readers {
+			go func() {
+				time.Sleep(time.Duration(i) * arriveEvery)
+				start := time.Now()
+				_, err := rb.ReadByte()
+				outcomes <- outcome{err: err, elapsed: time.Since(start)}
+			}()
+		}
+		for range trickles {
+			time.Sleep(700 * time.Millisecond)
+			require.NoError(t, rb.WriteByte('!'))
+		}
+
+		var timedOut int
+		for range readers {
+			got := <-outcomes
+			if got.err == nil {
+				continue
+			}
+			require.ErrorIs(t, got.err, ringbuffer.ErrTimeout)
+			require.Equal(t, timeout, got.elapsed, "a shared timer must not delay any deadline")
+			timedOut++
+		}
+		require.Equal(t, readers-trickles, timedOut)
+	})
+}
+
+func (s *RingBufferSuite) TestFinishedTimedWaitDoesNotKeepBufferAlive() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		rb := ringbuffer.New(4,
+			ringbuffer.WithReadWaitOnEmpty(true),
+			ringbuffer.WithReadTimeout(time.Hour),
+		)
+		read := make(chan error, 1)
+		go func() {
+			_, err := rb.ReadByte()
+			read <- err
+		}()
+		synctest.Wait()
+		require.Empty(t, read, "read should be in a timed wait")
+		require.NoError(t, rb.WriteByte('!'))
+		require.NoError(t, <-read)
+		abandoned := weak.Make(rb)
+		rb = nil
+
+		require.Eventually(t, func() bool {
+			runtime.GC()
+			return abandoned.Value() == nil
+		}, time.Minute, time.Millisecond, "no timer stays armed once nobody waits")
+	})
+}
+
 func (s *RingBufferSuite) TestTimeoutIgnoredByCallsThatDoNotBlock() {
 	synctest.Test(s.T(), func(t *testing.T) {
 		rb := ringbuffer.New(4,
