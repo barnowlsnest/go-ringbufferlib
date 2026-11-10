@@ -29,6 +29,7 @@ type (
 		whenWrite             *sync.Cond
 		abortErr              error
 		ctx                   context.Context
+		ctxGeneration         uint64
 		stopCtx               func() bool
 		buf                   []byte
 		size                  uint64
@@ -116,10 +117,14 @@ func WithWriteTimeout(timeout time.Duration) Option {
 // WithContext replaces an earlier one.
 func WithContext(ctx context.Context) Option {
 	return func(rb *RingBuffer) {
+		rb.muState.Lock()
+		defer rb.muState.Unlock()
 		if rb.stopCtx != nil {
 			rb.stopCtx()
 			rb.stopCtx = nil
 		}
+		rb.ctxGeneration++
+		generation := rb.ctxGeneration
 		rb.ctx = nil
 		if ctx == nil {
 			return
@@ -128,6 +133,9 @@ func WithContext(ctx context.Context) Option {
 		abort := func() {
 			rb.muState.Lock()
 			defer rb.muState.Unlock()
+			if rb.ctxGeneration != generation {
+				return
+			}
 			rb.abort(context.Cause(ctx))
 		}
 		// AfterFunc runs abort in its own goroutine, so a few calls could
