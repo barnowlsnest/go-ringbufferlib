@@ -1,4 +1,4 @@
-module github.com/barnowlsnest/go-ringbufferlib
+module github.com/barnowlsnest/go-ringbufferlib/v1
 
 go 1.27
 

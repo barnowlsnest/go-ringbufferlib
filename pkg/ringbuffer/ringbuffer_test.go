@@ -22,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 
-	"github.com/barnowlsnest/go-ringbufferlib/pkg/ringbuffer"
+	"github.com/barnowlsnest/go-ringbufferlib/v1/pkg/ringbuffer"
 )
 
 type RingBufferSuite struct {

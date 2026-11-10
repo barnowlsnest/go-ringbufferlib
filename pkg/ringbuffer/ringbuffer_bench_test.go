@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/barnowlsnest/go-ringbufferlib/pkg/ringbuffer"
+	"github.com/barnowlsnest/go-ringbufferlib/v1/pkg/ringbuffer"
 )
 
 func BenchmarkWriteRead(b *testing.B) {

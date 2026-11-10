@@ -6,7 +6,7 @@ vars:
   ALL: ./...
 
 env:
-  MODULE_PATH: github.com/barnowlsnest/go-ringbufferlib
+  MODULE_PATH: github.com/barnowlsnest/go-ringbufferlib/v1
 
 tasks:
   go-update:

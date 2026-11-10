@@ -108,7 +108,7 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/barnowlsnest/go-ringbufferlib
+        - github.com/barnowlsnest/go-ringbufferlib/v1
   exclusions:
     generated: lax
     paths:
