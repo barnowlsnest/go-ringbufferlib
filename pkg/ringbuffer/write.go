@@ -1,6 +1,9 @@
 package ringbuffer
 
-import "unicode/utf8"
+import (
+	"time"
+	"unicode/utf8"
+)
 
 func (rb *RingBuffer) Write(p []byte) (int, error) {
 	rb.muState.Lock()
@@ -12,9 +15,13 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 		return rb.write(p)
 	}
 	var total int
+	var deadline time.Time
 	for len(p) > 0 {
 		for rb.isFull() && !rb.draining {
-			rb.whenRead.Wait() // copyFrom broadcasts after each read
+			// copyFrom broadcasts after each read
+			if err := rb.waitOn(rb.whenRead, rb.writeTimeout, &deadline); err != nil {
+				return total, err
+			}
 		}
 		if err := rb.validateState(); err != nil {
 			return total, err
@@ -23,6 +30,7 @@ func (rb *RingBuffer) Write(p []byte) (int, error) {
 		n := rb.copyIn(p[:min(uint64(len(p)), free)])
 		total += n
 		p = p[n:]
+		deadline = time.Time{}
 	}
 	return total, nil
 }

@@ -28,6 +28,22 @@
 // Read returns up to len(dest) bytes in FIFO order. On an empty buffer it
 // returns [ErrEmpty], or blocks until data arrives with WithReadWaitOnEmpty(true).
 //
+// # Timeouts
+//
+// WithReadTimeout and WithWriteTimeout bound how long a blocked call waits,
+// failing it with [ErrTimeout]. They limit waiting without progress, not the
+// whole stream: each Read starts a fresh wait, and a Write restarts its wait
+// whenever part of p is written, so io.Copy over a slow but steady stream
+// keeps going. Calls that do not block are unaffected.
+//
+// # Cancellation
+//
+// WithContext ties the buffer to a context. Once it is done, blocked calls
+// wake at once and every call fails with context.Cause(ctx), even with unread
+// bytes left. That tells a canceled stream apart from one that ended with
+// Close and [io.EOF]. Timeouts catch a stalled stream; the context stops a
+// healthy one.
+//
 // # Close
 //
 // Close wakes every blocked reader and writer. Readers still receive the
