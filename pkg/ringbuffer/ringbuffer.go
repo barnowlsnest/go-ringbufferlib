@@ -33,6 +33,7 @@ type (
 		ctx                   context.Context
 		stopCtx               func() bool
 		buf                   []byte
+		ctxCleanup            runtime.Cleanup
 		ctxGeneration         uint64
 		size                  uint64
 		mask                  uint64
@@ -44,6 +45,7 @@ type (
 		writeTimeout          time.Duration
 		draining              bool
 		closed                bool
+		built                 bool
 		shouldDrainOnClose    bool
 		shouldReadWaitOnEmpty bool
 		shouldOverWrite       bool
@@ -70,6 +72,7 @@ func New(size uint64, opts ...Option) *RingBuffer {
 	for _, opt := range opts {
 		opt(&rb)
 	}
+	rb.built = true
 	return &rb
 }
 
@@ -130,6 +133,8 @@ func WithContext(ctx context.Context) Option {
 		if rb.stopCtx != nil {
 			rb.stopCtx()
 			rb.stopCtx = nil
+			rb.ctxCleanup.Stop()
+			rb.ctxCleanup = runtime.Cleanup{}
 		}
 		rb.ctxGeneration++
 		generation := rb.ctxGeneration
@@ -148,15 +153,18 @@ func WithContext(ctx context.Context) Option {
 			}
 			live.abort(context.Cause(ctx))
 		}
-		// AfterFunc on a done ctx would abort from its own goroutine before a
-		// later WithContext could replace it; validateContext aborts on the
-		// first call instead.
+		// Inside New a later WithContext may still replace a done ctx, and
+		// AfterFunc would abort from its own goroutine before that. Nothing
+		// can be blocked yet, so validateContext aborts on the first call.
 		if ctx.Err() != nil {
+			if rb.built {
+				rb.abort(context.Cause(ctx))
+			}
 			return
 		}
 		stop := context.AfterFunc(ctx, abort)
 		rb.stopCtx = stop
-		runtime.AddCleanup(rb, func(stop func() bool) { stop() }, stop)
+		rb.ctxCleanup = runtime.AddCleanup(rb, func(stop func() bool) { stop() }, stop)
 	}
 }
 

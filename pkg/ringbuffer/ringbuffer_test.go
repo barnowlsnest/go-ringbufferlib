@@ -1096,6 +1096,43 @@ func (s *RingBufferSuite) TestAlreadyCanceledContextIsReplaceable() {
 	s.Require().NoError(err, "replaced context has no effect")
 }
 
+func (s *RingBufferSuite) TestAlreadyCanceledContextWakesBlockedCallOnLiveBuffer() {
+	synctest.Test(s.T(), func(t *testing.T) {
+		rb := ringbuffer.New(4, ringbuffer.WithReadWaitOnEmpty(true))
+		blocked := make(chan error, 1)
+		go func() {
+			_, err := rb.ReadByte()
+			blocked <- err
+		}()
+		synctest.Wait()
+		require.Empty(t, blocked, "read should be waiting for data")
+
+		canceled, cancel := context.WithCancelCause(t.Context())
+		cancel(errStreamAborted)
+		ringbuffer.WithContext(canceled)(rb)
+		synctest.Wait()
+
+		require.Len(t, blocked, 1, "blocked read wakes without another event")
+		require.ErrorIs(t, <-blocked, errStreamAborted)
+	})
+}
+
+func (s *RingBufferSuite) TestReplacedContextIsNotRetainedByBuffer() {
+	replaced := &watchedContext{
+		Context: context.Background(),
+		done:    make(chan struct{}),
+	}
+	rb := ringbuffer.New(4, ringbuffer.WithContext(replaced))
+	ringbuffer.WithContext(s.T().Context())(rb)
+	collectable := weak.Make(replaced)
+
+	s.Require().Eventually(func() bool {
+		runtime.GC()
+		return collectable.Value() == nil
+	}, 5*time.Second, time.Millisecond, "a live buffer does not keep a replaced ctx alive")
+	runtime.KeepAlive(rb)
+}
+
 func (s *RingBufferSuite) TestStartedCallbackFromReplacedContextIsIgnored() {
 	synctest.Test(s.T(), func(t *testing.T) {
 		replaced := &callbackContext{
