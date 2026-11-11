@@ -49,8 +49,7 @@ type (
 		whenRead              *sync.Cond
 		whenWrite             *sync.Cond
 		abortErr              error
-		ctx                   context.Context
-		ctxDone               <-chan struct{}
+		ctxErr                func() error
 		stopCtx               func() bool
 		readWake              condTimer
 		writeWake             condTimer
@@ -162,8 +161,17 @@ func WithContext(ctx context.Context) Option {
 		}
 		rb.ctxGeneration++
 		generation := rb.ctxGeneration
-		rb.ctx = ctx
-		rb.ctxDone = ctx.Done()
+		done := ctx.Done()
+		// Polling the Done channel cached here costs the same at any ctx depth,
+		// while ctx.Done() and ctx.Err() walk the whole chain.
+		rb.ctxErr = func() error {
+			select {
+			case <-done:
+				return context.Cause(ctx)
+			default:
+				return nil
+			}
+		}
 		// Held weakly so a long-lived ctx does not keep an abandoned buffer alive.
 		abandonable := weak.Make(rb)
 		abort := func() {
@@ -328,18 +336,14 @@ func (rb *RingBuffer) validateContext() error {
 	if rb.abortErr != nil {
 		return rb.abortErr
 	}
-	if rb.ctxDone == nil || rb.closed {
+	if rb.ctxErr == nil || rb.closed {
 		return nil
 	}
-	// A receive on the cached Done channel costs the same at any ctx depth,
-	// while ctx.Err() walks the whole chain.
-	select {
-	case <-rb.ctxDone:
-		rb.abort(context.Cause(rb.ctx))
+	if err := rb.ctxErr(); err != nil {
+		rb.abort(err)
 		return rb.abortErr
-	default:
-		return nil
 	}
+	return nil
 }
 
 // waitOn sets *deadline on its first call, so one deadline covers every wait
