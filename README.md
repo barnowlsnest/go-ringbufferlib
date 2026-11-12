@@ -15,6 +15,10 @@ A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and impl
 - **Zero allocations** on the `Write`/`Read` hot path, including blocked calls with a timeout set: each buffer creates its two wake-up timers once and reuses them.
 - **No runtime dependencies:** the package imports only the standard library.
 
+## How it works
+
+![An 8-byte ring with read and write cursors that wrap around, then overwrite mode dropping the oldest bytes and backpressure mode blocking the writer until a read frees room](docs/how-it-works.svg)
+
 ## Install
 
 ```sh

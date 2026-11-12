@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 676" width="920" height="676" role="img" aria-labelledby="title desc">
+<title id="title">How the ring buffer works</title>
+<desc id="desc">An 8-byte ring with read and write cursors that wrap around, and a step-by-step comparison of overwrite mode, which drops the oldest bytes, and backpressure mode, which blocks the writer until a reader frees room.</desc>
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.t{font-size:14px}.h{font-size:17px;font-weight:600}.s{font-size:12.5px}
+.m,.cell,.idx{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.m{font-size:13px}.cell{font-size:16px;font-weight:600}.idx{font-size:11px}
+text{fill:#1f2328}.s,.idx{fill:#59636e}.rd{fill:#bc4c00}.wr{fill:#0969da}.drop{fill:#cf222e}.bg{fill:#ffffff}.panel{fill:#f6f8fa;stroke:#d0d7de}.c-data{fill:#ddf4ff;stroke:#0969da}.c-new{fill:#dafbe1;stroke:#1a7f37}.c-empty{fill:#ffffff;stroke:#d0d7de}.ln-rd{stroke:#bc4c00}.ln-wr{stroke:#0969da}.ln-mu{stroke:#59636e}.mk{fill:#59636e}
+@media (prefers-color-scheme:dark){text{fill:#e6edf3}.s,.idx{fill:#9198a1}.rd{fill:#f0883e}.wr{fill:#4493f8}.drop{fill:#f85149}.bg{fill:#0d1117}.panel{fill:#161b22;stroke:#3d444d}.c-data{fill:#0c2d6b;stroke:#4493f8}.c-new{fill:#04260f;stroke:#3fb950}.c-empty{fill:#0d1117;stroke:#3d444d}.ln-rd{stroke:#f0883e}.ln-wr{stroke:#4493f8}.ln-mu{stroke:#9198a1}.mk{fill:#9198a1}}
+</style>
+<defs><marker id="arw" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" class="mk"/></marker></defs>
+<rect class="bg" width="920" height="676" rx="12"/>
+<rect class="panel" x="16" y="16" width="888" height="290" rx="10"/>
+<text x="36.0" y="46.0" class="h" text-anchor="start">One fixed slice, two cursors that wrap around</text>
+<path class="c-data" stroke-width="1.5" d="M242.2 68.0A104 104 0 0 1 312.0 96.9L281.5 128.7A60 60 0 0 0 241.3 112.0Z"/>
+<text x="271.4" y="102.2" class="cell" text-anchor="middle">t</text>
+<text x="284.8" y="67.9" class="idx" text-anchor="middle">0</text>
+<path class="c-data" stroke-width="1.5" d="M315.1 100.0A104 104 0 0 1 344.0 169.8L300.0 170.7A60 60 0 0 0 283.3 130.5Z"/>
+<text x="315.8" y="146.6" class="cell" text-anchor="middle">e</text>
+<text x="348.1" y="131.2" class="idx" text-anchor="middle">1</text>
+<path class="c-data" stroke-width="1.5" d="M344.0 174.2A104 104 0 0 1 315.1 244.0L283.3 213.5A60 60 0 0 0 300.0 173.3Z"/>
+<text x="315.8" y="209.4" class="cell" text-anchor="middle">s</text>
+<text x="348.1" y="220.8" class="idx" text-anchor="middle">2</text>
+<path class="c-empty" stroke-width="1.5" d="M312.0 247.1A104 104 0 0 1 242.2 276.0L241.3 232.0A60 60 0 0 0 281.5 215.3Z"/>
+<text x="284.8" y="284.1" class="idx" text-anchor="middle">3</text>
+<path class="c-empty" stroke-width="1.5" d="M237.8 276.0A104 104 0 0 1 168.0 247.1L198.5 215.3A60 60 0 0 0 238.7 232.0Z"/>
+<text x="195.2" y="284.1" class="idx" text-anchor="middle">4</text>
+<path class="c-empty" stroke-width="1.5" d="M164.9 244.0A104 104 0 0 1 136.0 174.2L180.0 173.3A60 60 0 0 0 196.7 213.5Z"/>
+<text x="131.9" y="220.8" class="idx" text-anchor="middle">5</text>
+<path class="c-data" stroke-width="1.5" d="M136.0 169.8A104 104 0 0 1 164.9 100.0L196.7 130.5A60 60 0 0 0 180.0 170.7Z"/>
+<text x="164.2" y="146.6" class="cell" text-anchor="middle">b</text>
+<text x="131.9" y="131.2" class="idx" text-anchor="middle">6</text>
+<path class="c-data" stroke-width="1.5" d="M168.0 96.9A104 104 0 0 1 237.8 68.0L238.7 112.0A60 60 0 0 0 198.5 128.7Z"/>
+<text x="208.6" y="102.2" class="cell" text-anchor="middle">y</text>
+<text x="195.2" y="67.9" class="idx" text-anchor="middle">7</text>
+<line class="ln-rd" x1="188.0" y1="172.0" x2="106.0" y2="172.0" stroke-width="3" stroke-linecap="round"/>
+<text x="96.0" y="176.0" class="m rd" text-anchor="end">readPos = 6</text>
+<line class="ln-wr" x1="276.8" y1="208.8" x2="334.8" y2="266.8" stroke-width="3" stroke-linecap="round"/>
+<text x="341.8" y="277.8" class="m wr" text-anchor="start">writePos = 3</text>
+<path d="M212.3 156.0A32 32 0 0 1 267.7 156.0" fill="none" class="ln-mu" stroke-width="1.5" marker-end="url(#arw)"/>
+<text x="240.0" y="184.0" class="idx" text-anchor="middle">&amp; mask</text>
+<text x="462.0" y="82.0" class="t" text-anchor="start">New(8) allocates one 8-byte slice. Capacity is a power of two, so</text>
+<text x="462.0" y="104.0" class="t" text-anchor="start">a cursor wraps with  pos &amp; (Cap−1)  instead of a modulo.</text>
+<rect x="462" y="126" width="10" height="10" rx="2" class="wr"/>
+<text x="480.0" y="136.0" class="t" text-anchor="start">Write copies bytes in at writePos and moves it forward.</text>
+<rect x="462" y="148" width="10" height="10" rx="2" class="rd"/>
+<text x="480.0" y="158.0" class="t" text-anchor="start">Read copies bytes out from readPos and moves it forward.</text>
+<text x="462.0" y="190.0" class="t" text-anchor="start">Here the 5 unread bytes run from slot 6 past the end to slot 2:</text>
+<text x="462.0" y="212.0" class="t" text-anchor="start">Len() = 5, Available() = 3, and Read returns &quot;bytes&quot;.</text>
+<text x="462.0" y="244.0" class="s" text-anchor="start">One mutex guards the cursors. Two sync.Conds wake blocked readers</text>
+<text x="462.0" y="266.0" class="s" text-anchor="start">and writers, each with one reused timer for timeouts.</text>
+<rect class="panel" x="16" y="322" width="436" height="338" rx="10"/>
+<text x="36.0" y="352.0" class="h" text-anchor="start">Overwrite (default)</text>
+<text x="36.0" y="372.0" class="s m" text-anchor="start">WithOverWrite(true)</text>
+<text x="36.0" y="402.0" class="t" text-anchor="start">Full: Len() = 8, Available() = 0</text>
+<rect class="c-data" stroke-width="1.5" x="37" y="412" width="34" height="32" rx="4"/>
+<text x="54.0" y="434.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="73" y="412" width="34" height="32" rx="4"/>
+<text x="90.0" y="434.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="109" y="412" width="34" height="32" rx="4"/>
+<text x="126.0" y="434.0" class="cell" text-anchor="middle">d</text>
+<rect class="c-data" stroke-width="1.5" x="145" y="412" width="34" height="32" rx="4"/>
+<text x="162.0" y="434.0" class="cell" text-anchor="middle">-</text>
+<rect class="c-data" stroke-width="1.5" x="181" y="412" width="34" height="32" rx="4"/>
+<text x="198.0" y="434.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="217" y="412" width="34" height="32" rx="4"/>
+<text x="234.0" y="434.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="253" y="412" width="34" height="32" rx="4"/>
+<text x="270.0" y="434.0" class="cell" text-anchor="middle">g</text>
+<rect class="c-data" stroke-width="1.5" x="289" y="412" width="34" height="32" rx="4"/>
+<text x="306.0" y="434.0" class="cell" text-anchor="middle">;</text>
+<path class="rd" d="M53.0 448l-6 9h6z"/>
+<path class="wr" d="M55.0 448v9h6z"/>
+<text x="36.0" y="474.0" class="t" text-anchor="start">Write(&quot;new&quot;) drops the 3 oldest bytes</text>
+<rect class="c-new" stroke-width="1.5" x="37" y="484" width="34" height="32" rx="4"/>
+<text x="54.0" y="506.0" class="cell" text-anchor="middle">n</text>
+<rect class="c-new" stroke-width="1.5" x="73" y="484" width="34" height="32" rx="4"/>
+<text x="90.0" y="506.0" class="cell" text-anchor="middle">e</text>
+<rect class="c-new" stroke-width="1.5" x="109" y="484" width="34" height="32" rx="4"/>
+<text x="126.0" y="506.0" class="cell" text-anchor="middle">w</text>
+<rect class="c-data" stroke-width="1.5" x="145" y="484" width="34" height="32" rx="4"/>
+<text x="162.0" y="506.0" class="cell" text-anchor="middle">-</text>
+<rect class="c-data" stroke-width="1.5" x="181" y="484" width="34" height="32" rx="4"/>
+<text x="198.0" y="506.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="217" y="484" width="34" height="32" rx="4"/>
+<text x="234.0" y="506.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="253" y="484" width="34" height="32" rx="4"/>
+<text x="270.0" y="506.0" class="cell" text-anchor="middle">g</text>
+<rect class="c-data" stroke-width="1.5" x="289" y="484" width="34" height="32" rx="4"/>
+<text x="306.0" y="506.0" class="cell" text-anchor="middle">;</text>
+<path class="rd" d="M161.0 520l-6 9h6z"/>
+<path class="wr" d="M163.0 520v9h6z"/>
+<text x="338.0" y="505.0" class="m drop" text-anchor="start">old dropped</text>
+<text x="36.0" y="546.0" class="t" text-anchor="start">Read(p) returns &quot;-log;new&quot;</text>
+<rect class="c-empty" stroke-width="1.5" x="37" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="73" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="109" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="145" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="181" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="217" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="253" y="556" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="289" y="556" width="34" height="32" rx="4"/>
+<path class="rd" d="M161.0 592l-6 9h6z"/>
+<path class="wr" d="M163.0 592v9h6z"/>
+<text x="36.0" y="626.0" class="s" text-anchor="start">Write never blocks. Keeps the newest bytes.</text>
+<rect class="panel" x="468" y="322" width="436" height="338" rx="10"/>
+<text x="488.0" y="352.0" class="h" text-anchor="start">Backpressure</text>
+<text x="488.0" y="372.0" class="s m" text-anchor="start">WithOverWrite(false)</text>
+<text x="488.0" y="402.0" class="t" text-anchor="start">Full: Write(&quot;new&quot;) waits for room</text>
+<rect class="c-data" stroke-width="1.5" x="489" y="412" width="34" height="32" rx="4"/>
+<text x="506.0" y="434.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="525" y="412" width="34" height="32" rx="4"/>
+<text x="542.0" y="434.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="561" y="412" width="34" height="32" rx="4"/>
+<text x="578.0" y="434.0" class="cell" text-anchor="middle">d</text>
+<rect class="c-data" stroke-width="1.5" x="597" y="412" width="34" height="32" rx="4"/>
+<text x="614.0" y="434.0" class="cell" text-anchor="middle">-</text>
+<rect class="c-data" stroke-width="1.5" x="633" y="412" width="34" height="32" rx="4"/>
+<text x="650.0" y="434.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="669" y="412" width="34" height="32" rx="4"/>
+<text x="686.0" y="434.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="705" y="412" width="34" height="32" rx="4"/>
+<text x="722.0" y="434.0" class="cell" text-anchor="middle">g</text>
+<rect class="c-data" stroke-width="1.5" x="741" y="412" width="34" height="32" rx="4"/>
+<text x="758.0" y="434.0" class="cell" text-anchor="middle">;</text>
+<path class="rd" d="M505.0 448l-6 9h6z"/>
+<path class="wr" d="M507.0 448v9h6z"/>
+<text x="790.0" y="433.0" class="m wr" text-anchor="start">Write waits</text>
+<text x="488.0" y="474.0" class="t" text-anchor="start">Read(p[:3]) returns &quot;old&quot;, wakes Write</text>
+<rect class="c-empty" stroke-width="1.5" x="489" y="484" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="525" y="484" width="34" height="32" rx="4"/>
+<rect class="c-empty" stroke-width="1.5" x="561" y="484" width="34" height="32" rx="4"/>
+<rect class="c-data" stroke-width="1.5" x="597" y="484" width="34" height="32" rx="4"/>
+<text x="614.0" y="506.0" class="cell" text-anchor="middle">-</text>
+<rect class="c-data" stroke-width="1.5" x="633" y="484" width="34" height="32" rx="4"/>
+<text x="650.0" y="506.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="669" y="484" width="34" height="32" rx="4"/>
+<text x="686.0" y="506.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="705" y="484" width="34" height="32" rx="4"/>
+<text x="722.0" y="506.0" class="cell" text-anchor="middle">g</text>
+<rect class="c-data" stroke-width="1.5" x="741" y="484" width="34" height="32" rx="4"/>
+<text x="758.0" y="506.0" class="cell" text-anchor="middle">;</text>
+<path class="rd" d="M614.0 520l-6 9h12z"/>
+<path class="wr" d="M506.0 520l-6 9h12z"/>
+<text x="488.0" y="546.0" class="t" text-anchor="start">Write copies &quot;new&quot; in, returns 3, nil</text>
+<rect class="c-new" stroke-width="1.5" x="489" y="556" width="34" height="32" rx="4"/>
+<text x="506.0" y="578.0" class="cell" text-anchor="middle">n</text>
+<rect class="c-new" stroke-width="1.5" x="525" y="556" width="34" height="32" rx="4"/>
+<text x="542.0" y="578.0" class="cell" text-anchor="middle">e</text>
+<rect class="c-new" stroke-width="1.5" x="561" y="556" width="34" height="32" rx="4"/>
+<text x="578.0" y="578.0" class="cell" text-anchor="middle">w</text>
+<rect class="c-data" stroke-width="1.5" x="597" y="556" width="34" height="32" rx="4"/>
+<text x="614.0" y="578.0" class="cell" text-anchor="middle">-</text>
+<rect class="c-data" stroke-width="1.5" x="633" y="556" width="34" height="32" rx="4"/>
+<text x="650.0" y="578.0" class="cell" text-anchor="middle">l</text>
+<rect class="c-data" stroke-width="1.5" x="669" y="556" width="34" height="32" rx="4"/>
+<text x="686.0" y="578.0" class="cell" text-anchor="middle">o</text>
+<rect class="c-data" stroke-width="1.5" x="705" y="556" width="34" height="32" rx="4"/>
+<text x="722.0" y="578.0" class="cell" text-anchor="middle">g</text>
+<rect class="c-data" stroke-width="1.5" x="741" y="556" width="34" height="32" rx="4"/>
+<text x="758.0" y="578.0" class="cell" text-anchor="middle">;</text>
+<path class="rd" d="M613.0 592l-6 9h6z"/>
+<path class="wr" d="M615.0 592v9h6z"/>
+<text x="488.0" y="626.0" class="s" text-anchor="start">Nothing is dropped. A stall past WithWriteTimeout fails with</text>
+<text x="488.0" y="644.0" class="s" text-anchor="start">ErrTimeout; Close or a canceled context wakes the writer.</text>
+<path class="rd" d="M750 344l-6 9h12z"/>
+<text x="762.0" y="353.0" class="s" text-anchor="start">readPos</text>
+<path class="wr" d="M830 344l-6 9h12z"/>
+<text x="842.0" y="353.0" class="s" text-anchor="start">writePos</text>
+</svg>
