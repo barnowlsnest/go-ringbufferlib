@@ -17,7 +17,7 @@ A fixed-capacity byte ring buffer for Go. It is safe for concurrent use and impl
 
 ## How it works
 
-![An 8-byte ring with read and write cursors that wrap around, then overwrite mode dropping the oldest bytes and backpressure mode blocking the writer until a read frees room](docs/how-it-works.svg)
+![Animated: an 8-byte ring with read and write positions that wrap around, then overwrite mode dropping the oldest bytes and backpressure mode blocking the writer until a read frees room](docs/how-it-works.svg)
 
 ## Install
 
